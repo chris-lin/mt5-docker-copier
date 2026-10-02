@@ -1,0 +1,17 @@
+[Common]
+Server=FTMO-DEMO
+Login=
+Password=
+News=0
+Experts=1
+
+[Experts]
+Enabled=1
+AllowLiveTrading=1
+AllowDllImport=1
+
+[StartUp]
+Expert=VantageSender
+Symbol=XAUUSD
+Period=M1
+EnableTrading=1
