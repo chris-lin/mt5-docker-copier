@@ -1,7 +1,5 @@
 *.ini
 !*.ini.example
-docker-compose.yml
-config.json
 *.env
 
 vantage_data/
@@ -11,4 +9,3 @@ ftmo_data/
 
 __pycache__/
 *.pyc
-*.ex5

@@ -12,7 +12,8 @@ RUN apt-get update && \
         wine64 \
         xvfb \
         procps \
-        ca-certificates && \
+        ca-certificates \
+        xdotool && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

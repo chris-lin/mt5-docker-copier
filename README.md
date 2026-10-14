@@ -25,6 +25,7 @@ mt5-docker-copier/
 ├── README.md
 ├── docker-compose.yml.example     # Docker Compose template
 ├── setup_firewall.sh              # Automated host firewall configuration
+├── search_servers.sh              # Headless broker server search automation
 ├── copier_hub.py                  # Python TCP routing hub
 ├── lot_rules.json                 # Lot size conversion rules
 ├── symbol_map.json                # Cross-broker symbol map
@@ -163,6 +164,22 @@ Prepare your `docker-compose.yml` from `docker-compose.yml.example`, then build 
 docker build -t mt5-headless .
 docker compose up -d
 ```
+
+#### Discover Broker Servers (`search_servers.sh`)
+> [!IMPORTANT]
+> If you want to connect to a specific broker's server, please make sure to search for the broker server first (e.g., `./search_servers.sh Vantage`), otherwise MT5 might fail to connect.
+>
+> In headless mode, MT5 requires broker network endpoints and server definitions to be cached in `servers.dat`. When connecting to a broker for the first time, use `search_servers.sh` while the container is running to trigger GUI-based server search automation via Xvfb:
+>
+> ```bash
+> # Copy script into container (if not already mounted)
+> docker cp search_servers.sh mt5_vantage:/mt5/
+>
+> # Run server discovery for the target broker
+> docker exec -it mt5_vantage ./search_servers.sh Vantage
+> ```
+> *(Repeat for FTMO or other brokers as needed, e.g., `docker exec -it mt5_ftmo ./search_servers.sh FTMO`).*
+
 
 ### 6. Start the TCP Bridge
 Launch the central router on the host machine:
