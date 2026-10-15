@@ -196,8 +196,10 @@ Once the containers start up, you will see `[CONNECTED]` events from both the Va
 ### 7. Access Web Dashboard (Live Monitoring & Dynamic Config)
 `copier_hub.py` includes a built-in web management interface running on `http://127.0.0.1:8080`.
 
-#### Accessing from Local Machine (Cloud VPS via SSH Tunnel)
-Because the dashboard listens securely on `127.0.0.1:8080`, forward the port to your local machine using an SSH tunnel:
+You can access the dashboard securely using either of the following two methods:
+
+#### Method A: Local Access via SSH Tunnel (Recommended for Desktop)
+Forward port `8080` from your VPS to your local computer:
 
 ```bash
 ssh -L 8080:127.0.0.1:8080 user@YOUR_VPS_IP
@@ -207,6 +209,12 @@ Then open your local browser at:
 ```text
 http://localhost:8080
 ```
+
+#### Method B: Remote Access on Any Device via Cloudflare Tunnel (Recommended for Mobile)
+To securely access and configure the dashboard from any smartphone, tablet, or external computer without exposing ports to the public internet:
+1. Connect `127.0.0.1:8080` using Cloudflare Zero Trust Tunnels to your custom domain (e.g., `copier.your-domain.com`).
+2. Access `https://copier.your-domain.com` directly from any mobile browser (iOS Safari, Android Chrome).
+3. The interface features touch-optimized cards, decimal keypads, iOS auto-zoom prevention, and PWA "Add to Home Screen" support.
 
 * **Default Credentials**:
   * Username: `admin`
