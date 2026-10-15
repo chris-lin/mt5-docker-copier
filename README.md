@@ -11,6 +11,7 @@ The reference configuration uses **Vantage** as the Master (Signal Source) and *
 ## Architecture & Key Features
 
 * **Headless Docker Environment**: Runs MT5 instances inside minimal Linux containers via Wine without requiring an X11 server or GUI.
+* **Web Dashboard & Hot-Reload**: Built-in, zero-dependency browser management interface (`http://127.0.0.1:8080`) to configure symbol mappings and lot rules dynamically with immediate in-memory hot-reload, live EA status indicators, and Basic Auth security.
 * **Decoupled Mapping Engine**:
   * **Symbol Mapping**: Resolves contract naming discrepancies across brokers (e.g., `NAS100.r` -> `US100.cash`).
   * **Flexible Lot Sizing**: Supports exact ladder maps, symbol-specific multipliers, fixed lots, and fallback global multipliers.
@@ -26,9 +27,11 @@ mt5-docker-copier/
 ├── docker-compose.yml.example     # Docker Compose template
 ├── setup_firewall.sh              # Automated host firewall configuration
 ├── search_servers.sh              # Headless broker server search automation
-├── copier_hub.py                  # Python TCP routing hub
+├── copier_hub.py                  # Python TCP routing hub & Web Dashboard
 ├── lot_rules.json                 # Lot size conversion rules
 ├── symbol_map.json                # Cross-broker symbol map
+├── web/
+│   └── index.html                 # Single-page Web Dashboard
 ├── mql5/
 │   ├── VantageSender.mq5          # Sender EA (Winsock-based)
 │   └── FTMOReceiver.mq5           # Receiver EA (Winsock + SymbolSelect)
@@ -189,6 +192,31 @@ python3 copier_hub.py
 ```
 
 Once the containers start up, you will see `[CONNECTED]` events from both the Vantage sender (port 9001) and the FTMO receiver (port 9002).
+
+### 7. Access Web Dashboard (Live Monitoring & Dynamic Config)
+`copier_hub.py` includes a built-in web management interface running on `http://127.0.0.1:8080`.
+
+#### Accessing from Local Machine (Cloud VPS via SSH Tunnel)
+Because the dashboard listens securely on `127.0.0.1:8080`, forward the port to your local machine using an SSH tunnel:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@YOUR_VPS_IP
+```
+
+Then open your local browser at:
+```text
+http://localhost:8080
+```
+
+* **Default Credentials**:
+  * Username: `admin`
+  * Password: `admin123` *(changeable in the dashboard's "Security" tab or via `WEB_USER` / `WEB_PASS` env variables)*
+* **Key Capabilities**:
+  * **Real-time Status Badges**: Live indicators showing whether `copier_hub.py` is running and whether Vantage/FTMO EAs are actively connected.
+  * **Visual Configuration**: Add, edit, and delete symbol mappings (`symbol_map.json`) and lot sizing rules (`lot_rules.json`) directly with form validation.
+  * **Immediate In-Memory Hot-Reload**: Saving updates the files and reloads configuration into memory instantly without restarting the hub or interrupting trades.
+  * **Automatic Timestamped Backups**: Automatically creates `.json` backups in `backups/` before applying any changes.
+  * **Live Activity Console**: Stream real-time trade signals and connection logs.
 
 ---
 

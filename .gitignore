@@ -9,3 +9,7 @@ ftmo_data/
 
 __pycache__/
 *.pyc
+
+# Web Dashboard backups and secrets
+backups/
+web_auth.json
