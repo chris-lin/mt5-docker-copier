@@ -19,7 +19,7 @@
 #define AF_INET        2
 #define SOCK_STREAM    1
 #define IPPROTO_TCP    6
-#define FIONBIO        0x8004667E // 設定 Non-blocking 模式的指令常數
+#define FIONBIO        0x8004667E // Command constant for setting non-blocking mode
 #define INVALID_SOCKET (ulong)(~0)
 
 CTrade trade;
@@ -73,12 +73,44 @@ bool ConnectToHub()
       return false;
    }
    
-   // 切換為非阻塞模式 (argp = 1)
+   // Switch to non-blocking mode (argp = 1)
    uint non_block = 1;
    ioctlsocket(client_sock, FIONBIO, non_block);
    
    Print("[Winsock] FTMO Receiver connected to Hub successfully!");
    return true;
+}
+
+double NormalizeLot(string symbol, double raw_lot)
+{
+   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   double max_lot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   if(step <= 0.0) step = 0.01;
+   
+   double normalized = MathRound(raw_lot / step) * step;
+   normalized = NormalizeDouble(normalized, 2);
+   if(max_lot > 0.0 && normalized > max_lot) normalized = max_lot;
+   return normalized;
+}
+
+bool IsTargetPosition(ulong src_ticket, string target_comment)
+{
+   if(src_ticket > 0 && (ulong)PositionGetInteger(POSITION_MAGIC) == src_ticket)
+      return true;
+   if(StringLen(target_comment) > 0 && PositionGetString(POSITION_COMMENT) == target_comment)
+      return true;
+   return false;
+}
+
+bool HasPositionBySource(ulong src_ticket, string target_comment)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0 && IsTargetPosition(src_ticket, target_comment))
+         return true;
+   }
+   return false;
 }
 
 void ExecuteCommand(string cmd)
@@ -95,36 +127,78 @@ void ExecuteCommand(string cmd)
       double volume = StringToDouble(parts[3]);
       double sl = StringToDouble(parts[4]);
       double tp = StringToDouble(parts[5]);
+      ulong src_ticket = (ulong)StringToInteger(parts[6]);
       string comment = "Src:" + parts[6];
       
-      // === 加入這行：確保該商品存在於 Market Watch 中 ===
+      // Restart idempotency guard: skip if an active position with the same source ticket (Magic or Comment) already exists
+      if(HasPositionBySource(src_ticket, comment))
+      {
+         Print("[FTMO] Skip duplicate OPEN for already active position: ", comment);
+         return;
+      }
+      
+      // Ensure the symbol is selected in Market Watch
       if(!SymbolSelect(symbol, true))
       {
          Print("[FTMO] Failed to select symbol: ", symbol, " Error: ", GetLastError());
          return;
       }
       
-      // 確保獲取到最新報價再下單
+      // Ensure the latest tick quote is available before placing the order
       MqlTick tick;
       if(!SymbolInfoTick(symbol, tick))
       {
          Print("[FTMO] Waiting for first tick for: ", symbol);
-         // 等待極短時間或直接下單由 CTrade 處理
+         // Wait briefly or proceed directly to let CTrade handle execution
       }
       
+      trade.SetExpertMagicNumber(src_ticket);
       if(orderType == ORDER_TYPE_BUY)
          trade.Buy(volume, symbol, 0, sl, tp, comment);
       else
          trade.Sell(volume, symbol, 0, sl, tp, comment);
    }
+   else if(parts[0] == "PARTIAL" && count >= 4)
+   {
+      string symbol = parts[1];
+      double ratio = StringToDouble(parts[2]);
+      ulong src_ticket = (ulong)StringToInteger(parts[3]);
+      string target_comment = "Src:" + parts[3];
+      if(ratio <= 0.0 || ratio >= 1.0) return;
+      
+      double min_lot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+      if(min_lot <= 0.0) min_lot = 0.01;
+      
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      {
+         ulong ticket = PositionGetTicket(i);
+         if(ticket > 0 && IsTargetPosition(src_ticket, target_comment))
+         {
+            double cur_vol = PositionGetDouble(POSITION_VOLUME);
+            double close_vol = NormalizeLot(symbol, cur_vol * ratio);
+            if(close_vol >= min_lot && (cur_vol - close_vol) >= min_lot - 1e-8)
+            {
+               Print("[FTMO] Partial close ticket #", ticket, " (", target_comment, "): ", cur_vol, " -> closing ", close_vol);
+               trade.SetExpertMagicNumber(src_ticket);
+               trade.PositionClosePartial(ticket, close_vol);
+            }
+            else
+            {
+               Print("[FTMO] Partial close skipped for #", ticket, ": cur_vol=", cur_vol, " close_vol=", close_vol, " min_lot=", min_lot);
+            }
+         }
+      }
+   }
    else if(parts[0] == "CLOSE" && count >= 3)
    {
+      ulong src_ticket = (ulong)StringToInteger(parts[2]);
       string target_comment = "Src:" + parts[2];
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
          ulong ticket = PositionGetTicket(i);
-         if(ticket > 0 && PositionGetString(POSITION_COMMENT) == target_comment)
+         if(ticket > 0 && IsTargetPosition(src_ticket, target_comment))
          {
+            trade.SetExpertMagicNumber(src_ticket);
             trade.PositionClose(ticket);
          }
       }
@@ -142,7 +216,7 @@ int OnInit()
    WSAStartup(0x0202, wsaData);
    
    ConnectToHub();
-   EventSetMillisecondTimer(50); // 50ms 檢查一次收到的指令
+   EventSetMillisecondTimer(50); // Poll incoming commands every 50ms
    return(INIT_SUCCEEDED);
 }
 
@@ -189,11 +263,11 @@ void OnTimer()
          }
       }
    }
-   else if(rec == 0) // 對方正常斷線
+   else if(rec == 0) // Peer disconnected gracefully
    {
       Print("[Winsock] Hub disconnected");
       closesocket(client_sock);
       client_sock = INVALID_SOCKET;
    }
-   // 若 rec < 0 且在非阻塞模式下代表暫無資料，忽略即可
+   // If rec < 0 in non-blocking mode, no data is currently available; ignore
 }

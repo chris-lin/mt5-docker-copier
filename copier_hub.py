@@ -242,6 +242,47 @@ def send_to_ftmo(cmd: str):
         else:
             log_event("WARN", "FTMO receiver not connected, command dropped!")
 
+def process_position_snapshot(last_positions: dict, positions: list):
+    """Compare previous and current Vantage position snapshots, dispatch commands to FTMO, and return (current_positions, commands_sent)."""
+    current_positions = {p["ticket"]: p for p in positions}
+    commands_sent = []
+
+    # 1. Detect open positions & partial closes
+    for ticket, pos in current_positions.items():
+        if ticket not in last_positions:
+            target_symbol = map_symbol(pos['symbol'])
+            vol = calculate_target_lot(target_symbol, pos["volume"])
+            # Stealth SL/TP (Mode A): always pass 0;0 to avoid cross-broker quote mismatch
+            cmd = f"OPEN;{target_symbol};{pos['type']};{vol};0;0;{ticket}"
+            log_event("TRADE", f"Open detected: {pos['symbol']} -> {target_symbol} vol={vol} (ticket #{ticket})")
+            send_to_ftmo(cmd)
+            commands_sent.append(cmd)
+        else:
+            old_vol = float(last_positions[ticket]["volume"])
+            new_vol = float(pos["volume"])
+            if old_vol > 0 and new_vol < old_vol - 1e-6:
+                target_symbol = map_symbol(pos['symbol'])
+                ratio = round((old_vol - new_vol) / old_vol, 6)
+                cmd = f"PARTIAL;{target_symbol};{ratio};{ticket}"
+                log_event(
+                    "TRADE",
+                    f"Partial close detected: {pos['symbol']} -> {target_symbol} "
+                    f"({old_vol:.2f} -> {new_vol:.2f}, -{ratio*100:.1f}%, ticket #{ticket})"
+                )
+                send_to_ftmo(cmd)
+                commands_sent.append(cmd)
+
+    # 2. Detect closed positions
+    for ticket, pos in last_positions.items():
+        if ticket not in current_positions:
+            target_symbol = map_symbol(pos['symbol'])
+            cmd = f"CLOSE;{target_symbol};{ticket}"
+            log_event("TRADE", f"Close detected: {pos['symbol']} -> {target_symbol} (ticket #{ticket})")
+            send_to_ftmo(cmd)
+            commands_sent.append(cmd)
+
+    return current_positions, commands_sent
+
 def handle_vantage_client(conn, addr):
     with status_lock:
         vantage_status["connected"] = True
@@ -270,26 +311,7 @@ def handle_vantage_client(conn, addr):
                     continue
                 try:
                     positions = json.loads(line)
-                    current_positions = {p["ticket"]: p for p in positions}
-                    
-                    # 1. Detect open positions
-                    for ticket, pos in current_positions.items():
-                        if ticket not in last_positions:
-                            target_symbol = map_symbol(pos['symbol'])
-                            vol = calculate_target_lot(target_symbol, pos["volume"])
-                            cmd = f"OPEN;{target_symbol};{pos['type']};{vol};{pos['sl']};{pos['tp']};{ticket}"
-                            log_event("TRADE", f"Open detected: {pos['symbol']} -> {target_symbol} vol={vol} (ticket #{ticket})")
-                            send_to_ftmo(cmd)
-                    
-                    # 2. Detect closed positions
-                    for ticket, pos in last_positions.items():
-                        if ticket not in current_positions:
-                            target_symbol = map_symbol(pos['symbol'])
-                            cmd = f"CLOSE;{target_symbol};{ticket}"
-                            log_event("TRADE", f"Close detected: {pos['symbol']} -> {target_symbol} (ticket #{ticket})")
-                            send_to_ftmo(cmd)
-                            
-                    last_positions = current_positions
+                    last_positions, _ = process_position_snapshot(last_positions, positions)
                 except Exception as e:
                     log_event("ERROR", f"Parsing Vantage data: {e} | Raw: {line}")
                     

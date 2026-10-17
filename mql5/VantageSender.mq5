@@ -25,7 +25,7 @@ input int    PORT = 9001;
 ulong client_sock = INVALID_SOCKET;
 datetime last_reconnect = 0;
 
-// 將 IP 與 Port 打包成 sockaddr_in 結構 (16 bytes)
+// Pack IP and Port into a sockaddr_in structure (16 bytes)
 void PrepareSockAddr(uchar &addr[], string ip, ushort port)
 {
    ArrayResize(addr, 16);
@@ -81,7 +81,7 @@ int OnInit()
    Print("ProgramName = ", MQLInfoString(MQL_PROGRAM_NAME));
 
    uchar wsaData[512];
-   WSAStartup(0x0202, wsaData); // 初始化 Winsock 2.2
+   WSAStartup(0x0202, wsaData); // Initialize Winsock 2.2
    
    ConnectToHub();
    EventSetMillisecondTimer(200);

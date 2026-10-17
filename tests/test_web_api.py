@@ -192,5 +192,55 @@ class TestWebAPI(unittest.TestCase):
             self.assertIn("Symbol Mapping", html)
             self.assertIn("Lot Sizing Rules", html)
 
+    def test_position_snapshot_stealth_sl_tp_and_partial_close(self):
+        last_positions = {}
+
+        # Step 1: Open position on Vantage with pre-set SL/TP -> should send 0;0 to FTMO
+        snapshot_1 = [{
+            "ticket": 99001,
+            "symbol": "NAS100.r",
+            "type": 0,
+            "volume": 0.40,
+            "price": 20100.0,
+            "sl": 20050.0,
+            "tp": 20250.0
+        }]
+        last_positions, cmds_1 = copier_hub.process_position_snapshot(last_positions, snapshot_1)
+        self.assertEqual(len(cmds_1), 1)
+        self.assertTrue(cmds_1[0].startswith("OPEN;US100.cash;0;"))
+        self.assertTrue(cmds_1[0].endswith(";0;0;99001"))
+
+        # Step 2: Partial close on Vantage from 0.40 -> 0.20 (50% reduction)
+        snapshot_2 = [{
+            "ticket": 99001,
+            "symbol": "NAS100.r",
+            "type": 0,
+            "volume": 0.20,
+            "price": 20100.0,
+            "sl": 20050.0,
+            "tp": 20250.0
+        }]
+        last_positions, cmds_2 = copier_hub.process_position_snapshot(last_positions, snapshot_2)
+        self.assertEqual(cmds_2, ["PARTIAL;US100.cash;0.5;99001"])
+
+        # Step 3: Second partial close on Vantage from 0.20 -> 0.05 (75% of remaining)
+        snapshot_3 = [{
+            "ticket": 99001,
+            "symbol": "NAS100.r",
+            "type": 0,
+            "volume": 0.05,
+            "price": 20100.0,
+            "sl": 20050.0,
+            "tp": 20250.0
+        }]
+        last_positions, cmds_3 = copier_hub.process_position_snapshot(last_positions, snapshot_3)
+        self.assertEqual(cmds_3, ["PARTIAL;US100.cash;0.75;99001"])
+
+        # Step 4: Full close on Vantage
+        snapshot_4 = []
+        last_positions, cmds_4 = copier_hub.process_position_snapshot(last_positions, snapshot_4)
+        self.assertEqual(cmds_4, ["CLOSE;US100.cash;99001"])
+
 if __name__ == "__main__":
     unittest.main()
+
