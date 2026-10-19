@@ -12,10 +12,17 @@ if [ -z "$TARGET_BROKER" ]; then
     exit 1
 fi
 
-# Capture Window ID
-WINDOW_ID=$(xdotool search --onlyvisible --name "Account" | head -n 1)
+# Capture Window ID (supports Demo, Trial, Live, Real, Netting, Hedge, Account, or MetaTrader titles)
+WINDOW_ID=$(xdotool search --onlyvisible --name "Account|Demo|Trial|Live|Real|Netting|Hedge|MetaTrader" | head -n 1)
 if [ -z "$WINDOW_ID" ]; then
-    WINDOW_ID=$(xdotool search --onlyvisible --name "Demo" | head -n 1)
+    # Fallback: pick the first visible window that has a non-empty title
+    for id in $(xdotool search --onlyvisible --name "."); do
+        wname=$(xdotool getwindowname "$id" 2>/dev/null)
+        if [ -n "$wname" ]; then
+            WINDOW_ID="$id"
+            break
+        fi
+    done
 fi
 
 if [ -z "$WINDOW_ID" ]; then
@@ -23,7 +30,7 @@ if [ -z "$WINDOW_ID" ]; then
     exit 1
 fi
 
-echo "Locked MT5 Window ID: $WINDOW_ID"
+echo "Locked MT5 Window ID: $WINDOW_ID ($(xdotool getwindowname "$WINDOW_ID"))"
 
 # 1. Get window geometry and focus inside window to force X11 input focus (avoid windowactivate errors)
 eval $(xdotool getwindowgeometry --shell "$WINDOW_ID")
