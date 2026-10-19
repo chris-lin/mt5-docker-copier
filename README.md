@@ -2,19 +2,25 @@
 
 ## Overview
 
-A lightweight, low-latency, cross-broker automated copy trading system running on Linux via Docker and Wine. This project demonstrates bridging two MetaTrader 5 (MT5) instances in headless mode using a central Python TCP hub.
+A lightweight, low-latency, cross-broker automated copy trading system running on Linux via Docker and Wine. This project bridges two MetaTrader 5 (MT5) instances in headless mode using a central Python TCP hub and a mobile-friendly Web Dashboard.
 
-The reference configuration uses **Vantage** as the Master (Signal Source) and **FTMO** as the Slave (Execution Receiver).
+While the default container names use `mt5_vantage` (Master / Signal Source) and `mt5_ftmo` (Slave / Execution Receiver), **v2.0** supports one-click switching across multiple Master brokers (e.g., **Vantage**, **Exness**) and Slave prop firms (e.g., **FTMO**, **FundedNext**).
 
 ---
 
 ## Architecture & Key Features
 
 * **Headless Docker Environment**: Runs MT5 instances inside minimal Linux containers via Wine without requiring an X11 server or GUI.
-* **Web Dashboard & Hot-Reload**: Built-in, zero-dependency browser management interface (`http://127.0.0.1:8080`) to configure symbol mappings and lot rules dynamically with immediate in-memory hot-reload, live EA status indicators, and Basic Auth security.
-* **Decoupled Mapping Engine**:
-  * **Symbol Mapping**: Resolves contract naming discrepancies across brokers (e.g., `NAS100.r` -> `US100.cash`).
-  * **Flexible Lot Sizing**: Supports exact ladder maps, symbol-specific multipliers, fixed lots, and fallback global multipliers.
+* **Web Dashboard & Hot-Reload**: Built-in, zero-dependency browser management interface (`http://127.0.0.1:8080`) optimized for desktop and mobile browsers with live EA status indicators and HTTP Basic Auth security.
+* **Multi-Broker Profile Presets (`v2.0`)**: Bundle `symbol_map` and `lot_rules` into named presets (`Vantage -> FTMO`, `Vantage -> FundedNext`, `Exness -> FTMO`, `Exness -> FundedNext`) stored in `profiles/presets.json` for instant, zero-downtime hot-swapping.
+* **Dual-Side MT5 Account Switcher (`v2.0`)**: Manage and switch both **Master (Sender)** and **Slave (Receiver)** MT5 accounts directly from the Web UI (`👤 Accounts` tab). Automatically generates UTF-16LE `mt5-server.ini` files, activates linked profile presets, and restarts the target Docker container in the background.
+* **Decoupled Mapping & Sizing Engine**:
+  * **Symbol Mapping**: Resolves contract naming discrepancies across brokers (e.g., `NAS100.r` -> `US100.cash`, `XAUUSDm` -> `XAUUSD`).
+  * **Source-Symbol Priority Lot Sizing**: Evaluates rules by **Source Symbol first**, then falls back to **Target Symbol**, allowing instruments with different contract sizes on the master broker (e.g., `XAUUSD247` at `0.25x` and `XAUUSD.tv` at `25x`) to map to the same target symbol (`XAUUSD`) with distinct multipliers.
+* **Execution Safeguards (`v1.1`)**:
+  * **Proportional Partial Close (`PARTIAL`)**: Detects partial volume reductions on the master account and closes the exact proportional ratio on the slave account, using dual-anchor tracking (`POSITION_MAGIC` + `POSITION_COMMENT`) so positions stay linked even after MT5 clears comments on partial closes.
+  * **Stealth SL/TP (Quote Offset Immunity)**: Sends `0;0` for SL/TP on initial `OPEN` commands to prevent `Invalid Stops` rejections or premature stop-outs caused by cross-broker spread/quote offsets, while synchronizing all exits in real time via `CLOSE` commands.
+  * **Restart Idempotency Guard**: Verifies existing open positions by `POSITION_MAGIC` / `Src:{ticket}` before executing `OPEN` commands to prevent duplicate trades when `copier_hub.py` restarts or reconnects.
 
 ---
 
@@ -24,17 +30,25 @@ The reference configuration uses **Vantage** as the Master (Signal Source) and *
 mt5-docker-copier/
 ├── .gitignore
 ├── README.md
+├── CHANGELOG.md                   # Release history (v1.0 -> v2.0)
 ├── docker-compose.yml.example     # Docker Compose template
 ├── setup_firewall.sh              # Automated host firewall configuration
 ├── search_servers.sh              # Headless broker server search automation
-├── copier_hub.py                  # Python TCP routing hub & Web Dashboard
-├── lot_rules.json                 # Lot size conversion rules
-├── symbol_map.json                # Cross-broker symbol map
+├── copier_hub.py                  # Python TCP routing hub & Web Dashboard (v2.0)
+├── lot_rules.json                 # Active lot size conversion rules
+├── symbol_map.json                # Active cross-broker symbol map
+├── profiles/
+│   ├── presets.example.json       # Template for multi-broker (symbol_map + lot_rules) presets
+│   ├── presets.json               # Local active profile presets (git-ignored)
+│   ├── accounts.example.json      # Template for Master/Slave MT5 credentials
+│   └── accounts.json              # Local MT5 credentials (git-ignored)
 ├── web/
-│   └── index.html                 # Single-page Web Dashboard
+│   └── index.html                 # Single-page Mobile & Desktop Web Dashboard
 ├── mql5/
-│   ├── VantageSender.mq5          # Sender EA (Winsock-based)
-│   └── FTMOReceiver.mq5           # Receiver EA (Winsock + SymbolSelect)
+│   ├── VantageSender.mq5          # Master Sender EA (Winsock-based)
+│   └── FTMOReceiver.mq5           # Slave Receiver EA (Winsock + Dual-Anchor Tracking)
+├── tests/
+│   └── test_web_api.py            # Automated unit test suite
 └── config_templates/
     ├── mt5-server.ini.example     # MT5 startup config template
     ├── servers.dat                # Broker servers list
@@ -50,25 +64,36 @@ Maps source broker symbol names to target broker symbol names:
 
 ```json
 {
-  // Format: "SourceSymbol": "TargetSymbol"
   "NAS100.r": "US100.cash",
   "NAS100": "US100.cash",
   "XAUUSD247": "XAUUSD",
+  "XAUUSD.tv": "XAUUSD",
   "US30.r": "US30.cash",
   "GER40.r": "GER40.cash"
 }
 ```
 
 ### `lot_rules.json`
-Defines lot conversion logic keyed by the target symbol. Evaluation priority: `fixed_lot` -> `lot_map` -> `multiplier` -> `default_multiplier`.
+Defines lot conversion logic. The engine checks **`SourceSymbol` first**, then falls back to **`TargetSymbol`**. Within a matched rule, evaluation priority is: `fixed_lot` -> `lot_map` -> `multiplier` -> `default_multiplier`.
 
 ```json
 {
-  // Global settings
   "default_multiplier": 1.0,
   "min_lot": 0.01,
 
   "rules": {
+    "XAUUSD247": {
+      // Source-symbol specific override (e.g., 0.25x for XAUUSD247 -> XAUUSD)
+      "multiplier": 0.25
+    },
+    "XAUUSD.tv": {
+      // Source-symbol specific override (e.g., 25x for mini-contract XAUUSD.tv -> XAUUSD)
+      "multiplier": 25.0
+    },
+    "XAUUSD": {
+      // Target-symbol fallback (applies when trading regular XAUUSD)
+      "multiplier": 1.0
+    },
     "US100.cash": {
       // Exact ladder matching: "SourceLot": TargetLot
       "lot_map": {
@@ -78,10 +103,6 @@ Defines lot conversion logic keyed by the target symbol. Evaluation priority: `f
         "1.0": 2.0
       },
       "default_multiplier": 1.0
-    },
-    "XAUUSD": {
-      // Proportional multiplier
-      "multiplier": 1.5
     },
     "EURUSD": {
       // Fixed lot size regardless of master volume
@@ -220,16 +241,20 @@ To securely access and configure the dashboard from any smartphone, tablet, or e
   * Username: `admin`
   * Password: `admin123` *(changeable in the dashboard's "Security" tab or via `WEB_USER` / `WEB_PASS` env variables)*
 * **Key Capabilities**:
-  * **Real-time Status Badges**: Live indicators showing whether `copier_hub.py` is running and whether Vantage/FTMO EAs are actively connected.
-  * **Visual Configuration**: Add, edit, and delete symbol mappings (`symbol_map.json`) and lot sizing rules (`lot_rules.json`) directly with form validation.
-  * **Immediate In-Memory Hot-Reload**: Saving updates the files and reloads configuration into memory instantly without restarting the hub or interrupting trades.
-  * **Automatic Timestamped Backups**: Automatically creates `.json` backups in `backups/` before applying any changes.
-  * **Live Activity Console**: Stream real-time trade signals and connection logs.
+  * **Real-time Status Badges**: Live indicators showing whether `copier_hub.py` is running, which Master/Slave accounts are currently active, and whether EAs are connected.
+  * **Active Profile Switcher Bar (`v2.0`)**: One-click switching (`⚡ Apply Profile`) and saving (`💾 Save Preset`) of `(symbol_map + lot_rules)` broker presets (`Vantage -> FTMO`, `Vantage -> FundedNext`, `Exness -> FTMO`, `Exness -> FundedNext`).
+  * **Dual-Side MT5 Account Switcher (`v2.0`)**: Dedicated **`👤 Accounts`** tab to manage and switch both **Master (Sender)** and **Slave (Receiver)** MT5 accounts (`⚡ Switch & Restart`), automatically updating `mt5-server.ini`, applying linked profile presets, and restarting the target Docker container.
+  * **Visual Configuration & Hot-Reload**: Add, edit, and delete symbol mappings (`symbol_map.json`) and lot sizing rules (`lot_rules.json`) with immediate in-memory hot-reload and automatic timestamped backups in `backups/`.
+  * **Live Activity Console**: Stream real-time trade signals (`OPEN`, `PARTIAL`, `CLOSE`) and connection logs.
 
 ---
 
 ## Verification & Monitoring
 
+* **Run Automated Unit Tests**:
+  ```bash
+  python3 -m unittest discover -s tests -v
+  ```
 * **View Python Hub Logs**: Inspect connection status, volume mapping calculations, and dispatched execution commands in real time directly from the terminal running `copier_hub.py`.
 * **View Container Logs**:
   ```bash

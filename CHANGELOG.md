@@ -6,8 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - **Dedicated `profiles/` Management Directory**:
-  - Introduced the `profiles/` directory (`profiles/presets.json`, `profiles/accounts.json`, and `profiles/accounts.example.json`) to centralize multi-broker profile presets and account switching configurations without cluttering the project root.
-  - Added `profiles/accounts.json` to `.gitignore` to ensure live MT5 login credentials remain strictly local and untracked.
+  - Introduced the `profiles/` directory (`profiles/presets.example.json`, `profiles/accounts.example.json`, `profiles/presets.json`, and `profiles/accounts.json`) to centralize multi-broker profile presets and account switching configurations without cluttering the project root.
+  - Added both `profiles/accounts.json` and `profiles/presets.json` to `.gitignore` to ensure live MT5 login credentials and personalized lot sizing presets remain strictly local and untracked.
 - **One-Click Multi-Broker Profile Presets (`profiles/presets.json`)**:
   - Bundled `symbol_map` and `lot_rules` into named profile presets with four built-in pairings: `Vantage -> FTMO`, `Vantage -> FundedNext`, `Exness -> FTMO`, and `Exness -> FundedNext`.
   - Added `GET /api/profiles` and `POST /api/profiles` (`save`, `activate`, `delete`) endpoints in `copier_hub.py` to support zero-downtime hot-swapping of symbol mappings and lot rules with automatic backups.

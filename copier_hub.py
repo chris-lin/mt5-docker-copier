@@ -29,6 +29,7 @@ BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 WEB_STATIC_DIR = os.path.join(BASE_DIR, "web")
 PROFILES_DIR = os.path.join(BASE_DIR, "profiles")
 PRESETS_FILE = os.path.join(PROFILES_DIR, "presets.json")
+PRESETS_EXAMPLE_FILE = os.path.join(PROFILES_DIR, "presets.example.json")
 ACCOUNTS_FILE = os.path.join(PROFILES_DIR, "accounts.json")
 
 MASTER_INI_FILE = os.path.join(BASE_DIR, os.getenv("MASTER_INI_PATH", "vantage_data/mt5-server.ini"))
@@ -451,7 +452,7 @@ def get_default_presets():
     }
 
 def load_presets_data() -> dict:
-    """Load presets from profiles/presets.json or initialize defaults."""
+    """Load presets from profiles/presets.json, seeding from presets.example.json or defaults if missing."""
     os.makedirs(PROFILES_DIR, exist_ok=True)
     if os.path.exists(PRESETS_FILE):
         try:
@@ -461,6 +462,15 @@ def load_presets_data() -> dict:
                     return data
         except Exception as e:
             log_event("ERROR", f"Failed to load {PRESETS_FILE}: {e}")
+    if os.path.exists(PRESETS_EXAMPLE_FILE):
+        try:
+            with open(PRESETS_EXAMPLE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "presets" in data:
+                    save_atomic_json(PRESETS_FILE, data, "presets")
+                    return data
+        except Exception as e:
+            log_event("ERROR", f"Failed to load {PRESETS_EXAMPLE_FILE}: {e}")
     default_data = get_default_presets()
     save_atomic_json(PRESETS_FILE, default_data, "presets")
     return default_data
