@@ -6,9 +6,12 @@ import os
 import shutil
 import datetime
 import base64
+import subprocess
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
+
+VERSION = "2.0"
 
 HOST = "0.0.0.0"
 VANTAGE_PORT = 9001
@@ -24,9 +27,18 @@ LOT_RULES_FILE = os.path.join(BASE_DIR, "lot_rules.json")
 AUTH_FILE = os.path.join(BASE_DIR, "web_auth.json")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 WEB_STATIC_DIR = os.path.join(BASE_DIR, "web")
+PROFILES_DIR = os.path.join(BASE_DIR, "profiles")
+PRESETS_FILE = os.path.join(PROFILES_DIR, "presets.json")
+ACCOUNTS_FILE = os.path.join(PROFILES_DIR, "accounts.json")
+
+MASTER_INI_FILE = os.path.join(BASE_DIR, os.getenv("MASTER_INI_PATH", "vantage_data/mt5-server.ini"))
+SLAVE_INI_FILE = os.path.join(BASE_DIR, os.getenv("SLAVE_INI_PATH", "ftmo_data/mt5-server.ini"))
+MASTER_CONTAINER = os.getenv("MASTER_CONTAINER", "mt5_vantage")
+SLAVE_CONTAINER = os.getenv("SLAVE_CONTAINER", "mt5_ftmo")
 
 os.makedirs(BACKUP_DIR, exist_ok=True)
 os.makedirs(WEB_STATIC_DIR, exist_ok=True)
+os.makedirs(PROFILES_DIR, exist_ok=True)
 
 # Shared memory configurations
 config_lock = threading.Lock()
@@ -196,14 +208,15 @@ def map_symbol(vantage_symbol: str) -> str:
     with config_lock:
         return SYMBOL_MAP.get(vantage_symbol, vantage_symbol)
 
-def calculate_target_lot(target_symbol: str, src_lot: float) -> float:
-    """Calculate target lot size for FTMO based on symbol and lot mapping rules."""
+def calculate_target_lot(target_symbol: str, src_lot: float, src_symbol: str = None) -> float:
+    """Calculate target lot size for FTMO based on source/target symbol and lot mapping rules."""
     with config_lock:
         min_lot = LOT_RULES.get("min_lot", 0.01)
         default_multiplier = LOT_RULES.get("default_multiplier", 1.0)
         rules = LOT_RULES.get("rules", {})
         
-        rule = rules.get(target_symbol)
+        # Priority: 1. Source symbol rule (e.g. XAUUSD247, XAUUSD.tv) -> 2. Target symbol rule (e.g. XAUUSD)
+        rule = (rules.get(src_symbol) if src_symbol else None) or rules.get(target_symbol)
         
         if rule:
             # 1. Check fixed lot
@@ -251,7 +264,7 @@ def process_position_snapshot(last_positions: dict, positions: list):
     for ticket, pos in current_positions.items():
         if ticket not in last_positions:
             target_symbol = map_symbol(pos['symbol'])
-            vol = calculate_target_lot(target_symbol, pos["volume"])
+            vol = calculate_target_lot(target_symbol, pos["volume"], src_symbol=pos['symbol'])
             # Stealth SL/TP (Mode A): always pass 0;0 to avoid cross-broker quote mismatch
             cmd = f"OPEN;{target_symbol};{pos['type']};{vol};0;0;{ticket}"
             log_event("TRADE", f"Open detected: {pos['symbol']} -> {target_symbol} vol={vol} (ticket #{ticket})")
@@ -362,6 +375,277 @@ def start_server(port, handler):
         t = threading.Thread(target=handler, args=(conn, addr), daemon=True)
         t.start()
 
+def get_default_presets():
+    """Return initial default broker pairing presets seeded from current configs."""
+    with config_lock:
+        cur_sym = dict(SYMBOL_MAP) if SYMBOL_MAP else {
+            "NAS100.r": "US100.cash",
+            "XAUUSD247": "XAUUSD",
+            "XAUUSD.tv": "XAUUSD",
+            "US30.r": "US30.cash",
+            "GER40.r": "GER40.cash"
+        }
+        cur_lot = json.loads(json.dumps(LOT_RULES)) if LOT_RULES else {
+            "default_multiplier": 1.0,
+            "min_lot": 0.01,
+            "rules": {}
+        }
+
+    return {
+        "active_profile": "Vantage -> FTMO",
+        "presets": {
+            "Vantage -> FTMO": {
+                "description": "Vantage Master to FTMO Slave",
+                "symbol_map": json.loads(json.dumps(cur_sym)),
+                "lot_rules": json.loads(json.dumps(cur_lot))
+            },
+            "Vantage -> FundedNext": {
+                "description": "Vantage Master to FundedNext Slave",
+                "symbol_map": {
+                    "NAS100.r": "NDX100",
+                    "NAS100": "NDX100",
+                    "XAUUSD247": "XAUUSD",
+                    "XAUUSD.tv": "XAUUSD",
+                    "US30.r": "US30",
+                    "GER40.r": "GER40"
+                },
+                "lot_rules": json.loads(json.dumps(cur_lot))
+            },
+            "Exness -> FTMO": {
+                "description": "Exness Master to FTMO Slave",
+                "symbol_map": {
+                    "USTECm": "US100.cash",
+                    "USTEC": "US100.cash",
+                    "XAUUSDm": "XAUUSD",
+                    "US30m": "US30.cash",
+                    "DE30m": "GER40.cash"
+                },
+                "lot_rules": {
+                    "default_multiplier": 1.0,
+                    "min_lot": 0.01,
+                    "rules": {
+                        "XAUUSD": {"fixed_lot": 2.0},
+                        "US100.cash": {"multiplier": 1.0}
+                    }
+                }
+            },
+            "Exness -> FundedNext": {
+                "description": "Exness Master to FundedNext Slave",
+                "symbol_map": {
+                    "USTECm": "NDX100",
+                    "USTEC": "NDX100",
+                    "XAUUSDm": "XAUUSD",
+                    "US30m": "US30",
+                    "DE30m": "GER40"
+                },
+                "lot_rules": {
+                    "default_multiplier": 1.0,
+                    "min_lot": 0.01,
+                    "rules": {
+                        "XAUUSD": {"fixed_lot": 2.0},
+                        "NDX100": {"multiplier": 1.0}
+                    }
+                }
+            }
+        }
+    }
+
+def load_presets_data() -> dict:
+    """Load presets from profiles/presets.json or initialize defaults."""
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+    if os.path.exists(PRESETS_FILE):
+        try:
+            with open(PRESETS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "presets" in data:
+                    return data
+        except Exception as e:
+            log_event("ERROR", f"Failed to load {PRESETS_FILE}: {e}")
+    default_data = get_default_presets()
+    save_atomic_json(PRESETS_FILE, default_data, "presets")
+    return default_data
+
+def activate_profile_preset(profile_name: str):
+    """Apply a named preset to symbol_map.json and lot_rules.json and hot-reload into memory."""
+    data = load_presets_data()
+    presets = data.get("presets", {})
+    if profile_name not in presets:
+        return False, f"Profile '{profile_name}' not found"
+
+    preset = presets[profile_name]
+    sym_map = preset.get("symbol_map", {})
+    lot_rules = preset.get("lot_rules", {})
+
+    valid_s, err_s = validate_symbol_map(sym_map)
+    if not valid_s:
+        return False, f"Invalid symbol_map in profile: {err_s}"
+    valid_l, err_l = validate_lot_rules(lot_rules)
+    if not valid_l:
+        return False, f"Invalid lot_rules in profile: {err_l}"
+
+    save_atomic_json(SYMBOL_MAP_FILE, sym_map, "symbol_map")
+    save_atomic_json(LOT_RULES_FILE, lot_rules, "lot_rules")
+    load_configs()
+
+    data["active_profile"] = profile_name
+    save_atomic_json(PRESETS_FILE, data, "presets")
+    log_event("PROFILE", f"Activated profile preset '{profile_name}' ({len(sym_map)} symbols)")
+    return True, ""
+
+def load_accounts_data() -> dict:
+    """Load Master and Slave accounts from profiles/accounts.json."""
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+    if os.path.exists(ACCOUNTS_FILE):
+        try:
+            with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    data.setdefault("active_master_id", "")
+                    data.setdefault("active_slave_id", "")
+                    data.setdefault("master_accounts", [])
+                    data.setdefault("slave_accounts", [])
+                    return data
+        except Exception as e:
+            log_event("ERROR", f"Failed to load {ACCOUNTS_FILE}: {e}")
+    default_acc = {
+        "active_master_id": "",
+        "active_slave_id": "",
+        "master_accounts": [],
+        "slave_accounts": []
+    }
+    return default_acc
+
+def mask_accounts_data(data: dict) -> dict:
+    """Return a copy of accounts data with passwords masked for safe UI display."""
+    masked = {
+        "active_master_id": data.get("active_master_id", ""),
+        "active_slave_id": data.get("active_slave_id", ""),
+        "master_accounts": [],
+        "slave_accounts": []
+    }
+    for key in ("master_accounts", "slave_accounts"):
+        for acc in data.get(key, []):
+            item = dict(acc)
+            has_pwd = bool(item.get("password"))
+            item["password"] = "••••••••" if has_pwd else ""
+            item["has_password"] = has_pwd
+            masked[key].append(item)
+    return masked
+
+def generate_mt5_ini(server: str, login: str, password: str, expert: str, startup_symbol: str = "XAUUSD") -> str:
+    """Generate MT5 startup configuration (mt5-server.ini) content."""
+    symbol = (startup_symbol or "XAUUSD").strip()
+    return (
+        "[Common]\n"
+        f"Server={server.strip()}\n"
+        f"Login={str(login).strip()}\n"
+        f"Password={password}\n"
+        "News=0\n"
+        "Experts=1\n"
+        "\n"
+        "[Experts]\n"
+        "Enabled=1\n"
+        "AllowLiveTrading=1\n"
+        "AllowDllImport=1\n"
+        "\n"
+        "[StartUp]\n"
+        f"Expert={expert}\n"
+        f"Symbol={symbol}\n"
+        "Period=M1\n"
+        "EnableTrading=1\n"
+    )
+
+def activate_mt5_account(role: str, account_id: str, restart_container: bool = True):
+    """Switch active Master or Slave MT5 account, write mt5-server.ini, apply linked profile, and optionally restart container."""
+    if role not in ("master", "slave"):
+        return False, {"error": "Role must be 'master' or 'slave'"}
+
+    acc_data = load_accounts_data()
+    list_key = "master_accounts" if role == "master" else "slave_accounts"
+    target_acc = None
+    for acc in acc_data.get(list_key, []):
+        if acc.get("id") == account_id:
+            target_acc = acc
+            break
+
+    if not target_acc:
+        return False, {"error": f"Account '{account_id}' not found in {list_key}"}
+
+    # 1. If account has a linked profile preset, activate it automatically
+    linked_profile = (target_acc.get("linked_profile") or "").strip()
+    profile_activated = None
+    if linked_profile:
+        ok, err = activate_profile_preset(linked_profile)
+        if ok:
+            profile_activated = linked_profile
+        else:
+            log_event("WARN", f"Could not activate linked profile '{linked_profile}': {err}")
+
+    # 2. Write mt5-server.ini atomically
+    ini_path = MASTER_INI_FILE if role == "master" else SLAVE_INI_FILE
+    expert_name = "VantageSender" if role == "master" else "FTMOReceiver"
+    container_name = MASTER_CONTAINER if role == "master" else SLAVE_CONTAINER
+
+    os.makedirs(os.path.dirname(os.path.abspath(ini_path)), exist_ok=True)
+    ini_content = generate_mt5_ini(
+        server=target_acc.get("server", ""),
+        login=target_acc.get("login", ""),
+        password=target_acc.get("password", ""),
+        expert=expert_name,
+        startup_symbol=target_acc.get("startup_symbol", "XAUUSD")
+    )
+    tmp_ini = ini_path + ".tmp"
+    with open(tmp_ini, "w", encoding="utf-8") as f:
+        f.write(ini_content)
+    os.replace(tmp_ini, ini_path)
+
+    # 3. Update active account ID
+    if role == "master":
+        acc_data["active_master_id"] = account_id
+    else:
+        acc_data["active_slave_id"] = account_id
+    save_atomic_json(ACCOUNTS_FILE, acc_data, "accounts")
+
+    log_event(
+        "ACCOUNT",
+        f"Switched {role.upper()} account to '{target_acc.get('name')}' "
+        f"({target_acc.get('server')} / {target_acc.get('login')}) -> updated {os.path.relpath(ini_path, BASE_DIR)}"
+    )
+
+    # 4. Optionally restart Docker container
+    container_restarted = False
+    docker_msg = "Container restart skipped"
+    if restart_container:
+        try:
+            proc = subprocess.run(
+                ["docker", "restart", container_name],
+                capture_output=True,
+                text=True,
+                timeout=20
+            )
+            if proc.returncode == 0:
+                container_restarted = True
+                docker_msg = f"Restarted container '{container_name}'"
+                log_event("ACCOUNT", f"Docker container '{container_name}' restarted successfully")
+            else:
+                docker_msg = (proc.stderr or proc.stdout or f"Exit code {proc.returncode}").strip()
+                log_event("WARN", f"Docker restart '{container_name}' returned non-zero: {docker_msg}")
+        except Exception as e:
+            docker_msg = str(e)
+            log_event("WARN", f"Docker restart '{container_name}' skipped/failed: {e}")
+
+    return True, {
+        "success": True,
+        "role": role,
+        "active_id": account_id,
+        "account_name": target_acc.get("name"),
+        "profile_activated": profile_activated,
+        "ini_updated": True,
+        "container": container_name,
+        "container_restarted": container_restarted,
+        "docker_msg": docker_msg
+    }
+
 # Web Server & REST API Handlers
 class WebRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -433,8 +717,23 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             with log_lock:
                 logs_copy = list(event_logs)
 
+            presets_info = load_presets_data()
+            acc_info = load_accounts_data()
+            active_master_name = next(
+                (a.get("name") for a in acc_info.get("master_accounts", []) if a.get("id") == acc_info.get("active_master_id")),
+                None
+            )
+            active_slave_name = next(
+                (a.get("name") for a in acc_info.get("slave_accounts", []) if a.get("id") == acc_info.get("active_slave_id")),
+                None
+            )
+
             data = {
+                "version": VERSION,
                 "hub_running": True,
+                "active_profile": presets_info.get("active_profile", ""),
+                "active_master_name": active_master_name,
+                "active_slave_name": active_slave_name,
                 "vantage": v_copy,
                 "ftmo": f_copy,
                 "loaded_at": last_config_load_time,
@@ -453,6 +752,14 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             with config_lock:
                 rules_copy = dict(LOT_RULES)
             self.send_json(200, rules_copy)
+            return
+
+        if path == "/api/profiles":
+            self.send_json(200, load_presets_data())
+            return
+
+        if path == "/api/accounts":
+            self.send_json(200, mask_accounts_data(load_accounts_data()))
             return
 
         self.send_response(404)
@@ -500,6 +807,148 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(200, {"success": True})
             except Exception as e:
                 self.send_json(500, {"success": False, "error": str(e)})
+            return
+
+        if path == "/api/profiles":
+            action = req_data.get("action", "")
+            name = (req_data.get("name") or "").strip()
+            if not name:
+                self.send_json(400, {"success": False, "error": "Profile name is required"})
+                return
+
+            data = load_presets_data()
+            presets = data.setdefault("presets", {})
+
+            if action == "save":
+                sym_map = req_data.get("symbol_map")
+                lot_rules = req_data.get("lot_rules")
+                if sym_map is None:
+                    with config_lock:
+                        sym_map = dict(SYMBOL_MAP)
+                if lot_rules is None:
+                    with config_lock:
+                        lot_rules = json.loads(json.dumps(LOT_RULES))
+
+                valid_s, err_s = validate_symbol_map(sym_map)
+                if not valid_s:
+                    self.send_json(400, {"success": False, "error": err_s})
+                    return
+                valid_l, err_l = validate_lot_rules(lot_rules)
+                if not valid_l:
+                    self.send_json(400, {"success": False, "error": err_l})
+                    return
+
+                presets[name] = {
+                    "description": req_data.get("description", f"Saved preset: {name}"),
+                    "symbol_map": sym_map,
+                    "lot_rules": lot_rules
+                }
+                data["active_profile"] = name
+                save_atomic_json(PRESETS_FILE, data, "presets")
+                log_event("PROFILE", f"Saved profile preset '{name}'")
+                self.send_json(200, {"success": True, "active_profile": name, "profiles": data})
+                return
+
+            if action == "activate":
+                ok, err = activate_profile_preset(name)
+                if not ok:
+                    self.send_json(400, {"success": False, "error": err})
+                    return
+                self.send_json(200, {"success": True, "active_profile": name, "profiles": load_presets_data()})
+                return
+
+            if action == "delete":
+                if name not in presets:
+                    self.send_json(404, {"success": False, "error": f"Profile '{name}' not found"})
+                    return
+                del presets[name]
+                if data.get("active_profile") == name:
+                    data["active_profile"] = next(iter(presets.keys()), "")
+                save_atomic_json(PRESETS_FILE, data, "presets")
+                log_event("PROFILE", f"Deleted profile preset '{name}'")
+                self.send_json(200, {"success": True, "profiles": data})
+                return
+
+            self.send_json(400, {"success": False, "error": f"Unknown profile action: {action}"})
+            return
+
+        if path == "/api/accounts":
+            action = req_data.get("action", "")
+            role = req_data.get("role", "")
+            if role not in ("master", "slave"):
+                self.send_json(400, {"success": False, "error": "Role must be 'master' or 'slave'"})
+                return
+
+            acc_data = load_accounts_data()
+            list_key = "master_accounts" if role == "master" else "slave_accounts"
+            acc_list = acc_data.setdefault(list_key, [])
+
+            if action == "save":
+                acc_obj = req_data.get("account", {})
+                acc_id = (acc_obj.get("id") or "").strip() or f"{role}_{int(time.time() * 1000)}"
+                name = (acc_obj.get("name") or "").strip()
+                server = (acc_obj.get("server") or "").strip()
+                login = str(acc_obj.get("login") or "").strip()
+                raw_pwd = acc_obj.get("password", "")
+                startup_symbol = (acc_obj.get("startup_symbol") or "XAUUSD").strip()
+                linked_profile = (acc_obj.get("linked_profile") or "").strip()
+                broker = (acc_obj.get("broker") or "").strip()
+
+                if not name or not server or not login:
+                    self.send_json(400, {"success": False, "error": "Name, Server, and Login are required"})
+                    return
+
+                existing_idx = next((i for i, a in enumerate(acc_list) if a.get("id") == acc_id), None)
+                if existing_idx is not None:
+                    old_pwd = acc_list[existing_idx].get("password", "")
+                    final_pwd = old_pwd if (raw_pwd in ("", "••••••••")) else raw_pwd
+                else:
+                    final_pwd = "" if raw_pwd == "••••••••" else raw_pwd
+
+                record = {
+                    "id": acc_id,
+                    "name": name,
+                    "broker": broker,
+                    "server": server,
+                    "login": login,
+                    "password": final_pwd,
+                    "startup_symbol": startup_symbol,
+                    "linked_profile": linked_profile
+                }
+                if existing_idx is not None:
+                    acc_list[existing_idx] = record
+                else:
+                    acc_list.append(record)
+
+                save_atomic_json(ACCOUNTS_FILE, acc_data, "accounts")
+                log_event("ACCOUNT", f"Saved {role} account '{name}' ({server} / {login})")
+                self.send_json(200, {"success": True, "accounts": mask_accounts_data(acc_data)})
+                return
+
+            if action == "delete":
+                acc_id = (req_data.get("id") or "").strip()
+                acc_data[list_key] = [a for a in acc_list if a.get("id") != acc_id]
+                active_key = "active_master_id" if role == "master" else "active_slave_id"
+                if acc_data.get(active_key) == acc_id:
+                    acc_data[active_key] = ""
+                save_atomic_json(ACCOUNTS_FILE, acc_data, "accounts")
+                log_event("ACCOUNT", f"Deleted {role} account id '{acc_id}'")
+                self.send_json(200, {"success": True, "accounts": mask_accounts_data(acc_data)})
+                return
+
+            if action == "activate":
+                acc_id = (req_data.get("id") or "").strip()
+                restart = bool(req_data.get("restart_container", True))
+                ok, res = activate_mt5_account(role, acc_id, restart_container=restart)
+                if not ok:
+                    self.send_json(400, {"success": False, **res})
+                    return
+                res["accounts"] = mask_accounts_data(load_accounts_data())
+                res["profiles"] = load_presets_data()
+                self.send_json(200, res)
+                return
+
+            self.send_json(400, {"success": False, "error": f"Unknown account action: {action}"})
             return
 
         if path == "/api/reload":

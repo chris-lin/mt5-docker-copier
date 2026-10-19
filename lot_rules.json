@@ -14,6 +14,12 @@
     "ETHUSD": {
       "multiplier": 0.5
     },
+    "XAUUSD247": {
+      "multiplier": 0.25
+    },
+    "XAUUSD.tv": {
+      "multiplier": 25.0
+    },
     "XAUUSD": {
       "fixed_lot": 2
     },

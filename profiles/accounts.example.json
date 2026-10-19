@@ -1,0 +1,48 @@
+{
+  "active_master_id": "master_vantage_1",
+  "active_slave_id": "slave_ftmo_1",
+  "master_accounts": [
+    {
+      "id": "master_vantage_1",
+      "name": "Vantage Main",
+      "broker": "Vantage",
+      "server": "VantageInternational-Demo",
+      "login": "YOUR_VANTAGE_LOGIN",
+      "password": "YOUR_VANTAGE_PASSWORD",
+      "startup_symbol": "XAUUSD",
+      "linked_profile": ""
+    },
+    {
+      "id": "master_exness_1",
+      "name": "Exness Main",
+      "broker": "Exness",
+      "server": "Exness-MT5Trial",
+      "login": "YOUR_EXNESS_LOGIN",
+      "password": "YOUR_EXNESS_PASSWORD",
+      "startup_symbol": "XAUUSDm",
+      "linked_profile": ""
+    }
+  ],
+  "slave_accounts": [
+    {
+      "id": "slave_ftmo_1",
+      "name": "FTMO 100k",
+      "broker": "FTMO",
+      "server": "FTMO-Demo",
+      "login": "YOUR_FTMO_LOGIN",
+      "password": "YOUR_FTMO_PASSWORD",
+      "startup_symbol": "XAUUSD",
+      "linked_profile": "Vantage -> FTMO"
+    },
+    {
+      "id": "slave_fundednext_1",
+      "name": "FundedNext 100k",
+      "broker": "FundedNext",
+      "server": "FundedNext-Server",
+      "login": "YOUR_FUNDEDNEXT_LOGIN",
+      "password": "YOUR_FUNDEDNEXT_PASSWORD",
+      "startup_symbol": "XAUUSD",
+      "linked_profile": "Vantage -> FundedNext"
+    }
+  ]
+}

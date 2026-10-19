@@ -576,7 +576,7 @@
 <header>
   <div class="header-content">
     <div class="brand">
-      <h1>⚡ MT5 Copier Hub</h1>
+      <h1>⚡ MT5 Copier Hub <span style="font-size: 0.75rem; background: rgba(56, 189, 248, 0.15); color: var(--accent); padding: 0.15rem 0.45rem; border-radius: 6px; vertical-align: middle;">v2.0</span></h1>
       <button class="btn btn-secondary btn-sm mobile-reload" onclick="forceReloadConfigs()" title="Reload configs from disk">
         🔄 Reload
       </button>
@@ -585,11 +585,11 @@
       <div class="badge" id="hub-badge" title="Hub Server Status">
         <span class="dot online"></span> Hub: Online
       </div>
-      <div class="badge" id="vantage-badge" title="Vantage EA (Port 9001)">
-        <span class="dot" id="vantage-dot"></span> Vantage: <span id="vantage-text">Checking...</span>
+      <div class="badge" id="vantage-badge" title="Master Sender EA (Port 9001)">
+        <span class="dot" id="vantage-dot"></span> <span id="master-label">Master</span>: <span id="vantage-text">Checking...</span>
       </div>
-      <div class="badge" id="ftmo-badge" title="FTMO EA (Port 9002)">
-        <span class="dot" id="ftmo-dot"></span> FTMO: <span id="ftmo-text">Checking...</span>
+      <div class="badge" id="ftmo-badge" title="Slave Receiver EA (Port 9002)">
+        <span class="dot" id="ftmo-dot"></span> <span id="slave-label">Slave</span>: <span id="ftmo-text">Checking...</span>
       </div>
       <button class="btn btn-secondary btn-sm desktop-reload" onclick="forceReloadConfigs()" title="Reload configs from disk">
         🔄 Reload
@@ -599,9 +599,23 @@
 </header>
 
 <div class="container">
+  <!-- PROFILE PRESET SWITCHER BAR -->
+  <div class="card" style="padding: 0.85rem 1.15rem; margin-bottom: 1.25rem; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;">
+    <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; flex: 1; min-width: 220px;">
+      <span style="font-weight: 700; font-size: 0.9rem; color: var(--accent); white-space: nowrap;">🗂️ Active Profile:</span>
+      <select id="profile-select" style="flex: 1; min-width: 180px; max-width: 320px;"></select>
+    </div>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+      <button class="btn btn-primary btn-sm" onclick="activateSelectedProfile()">⚡ Apply Profile</button>
+      <button class="btn btn-secondary btn-sm" onclick="saveCurrentAsProfile()">💾 Save Preset</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteSelectedProfile()" title="Delete selected profile">🗑️</button>
+    </div>
+  </div>
+
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('symbols')">🔀 Symbol Mapping</button>
     <button class="tab-btn" onclick="switchTab('lot-rules')">⚖️ Lot Sizing Rules</button>
+    <button class="tab-btn" onclick="switchTab('accounts')">👤 Accounts</button>
     <button class="tab-btn" onclick="switchTab('logs')">📜 Activity & Logs</button>
     <button class="tab-btn" onclick="switchTab('security')">🔒 Security</button>
   </div>
@@ -703,7 +717,44 @@
     </div>
   </div>
 
-  <!-- TAB 3: LOGS & ACTIVITY -->
+  <!-- TAB 3: ACCOUNTS (MASTER & SLAVE SWITCHER) -->
+  <div id="pane-accounts" class="tab-pane">
+    <div class="grid-2">
+      <!-- Master Signal Accounts -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">📡 Master Accounts (Sender)</div>
+            <div class="card-desc">e.g. Vantage / Exness. Writes to vantage_data/mt5-server.ini & restarts mt5_vantage.</div>
+          </div>
+          <div>
+            <button class="btn btn-primary btn-sm" onclick="openAccountModal('master')">➕ Add Master</button>
+          </div>
+        </div>
+        <div id="master-accounts-list">
+          <div style="color: var(--text-muted); text-align: center; padding: 1.5rem;">Loading master accounts...</div>
+        </div>
+      </div>
+
+      <!-- Slave Execution Accounts -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">🎯 Slave Accounts (Receiver)</div>
+            <div class="card-desc">e.g. FTMO / FundedNext. Writes to ftmo_data/mt5-server.ini & restarts mt5_ftmo.</div>
+          </div>
+          <div>
+            <button class="btn btn-primary btn-sm" onclick="openAccountModal('slave')">➕ Add Slave</button>
+          </div>
+        </div>
+        <div id="slave-accounts-list">
+          <div style="color: var(--text-muted); text-align: center; padding: 1.5rem;">Loading slave accounts...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 4: LOGS & ACTIVITY -->
   <div id="pane-logs" class="tab-pane">
     <div class="card">
       <div class="card-header">
@@ -725,7 +776,7 @@
     </div>
   </div>
 
-  <!-- TAB 4: SECURITY -->
+  <!-- TAB 5: SECURITY -->
   <div id="pane-security" class="tab-pane">
     <div class="card" style="max-width: 600px;">
       <div class="card-header">
@@ -773,11 +824,62 @@
   </div>
 </div>
 
+<!-- Modal for adding/editing MT5 Account -->
+<div id="account-modal" style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; align-items: center; justify-content: center; padding: 1rem; overflow-y: auto;">
+  <div class="card" style="width: 460px; max-width: calc(100vw - 2rem); margin: auto;">
+    <div class="card-title" id="account-modal-title" style="margin-bottom: 1rem;">Add MT5 Account</div>
+    <input type="hidden" id="acc-modal-role">
+    <input type="hidden" id="acc-modal-id">
+    <div class="grid-2">
+      <div class="input-group">
+        <label class="input-label">Display Name</label>
+        <input type="text" id="acc-modal-name" placeholder="e.g. Exness Main / FTMO 100k">
+      </div>
+      <div class="input-group">
+        <label class="input-label">Broker Tag</label>
+        <input type="text" id="acc-modal-broker" placeholder="e.g. Vantage, Exness, FTMO">
+      </div>
+    </div>
+    <div class="input-group">
+      <label class="input-label">MT5 Server Name (exact match from servers.dat)</label>
+      <input type="text" id="acc-modal-server" placeholder="e.g. FTMO-Demo or Exness-MT5Real">
+    </div>
+    <div class="grid-2">
+      <div class="input-group">
+        <label class="input-label">MT5 Login</label>
+        <input type="text" id="acc-modal-login" inputmode="numeric" placeholder="e.g. 15123456">
+      </div>
+      <div class="input-group">
+        <label class="input-label">MT5 Password</label>
+        <input type="password" id="acc-modal-password" placeholder="Leave blank to keep existing">
+      </div>
+    </div>
+    <div class="grid-2">
+      <div class="input-group">
+        <label class="input-label">Startup Chart Symbol</label>
+        <input type="text" id="acc-modal-symbol" value="XAUUSD" placeholder="XAUUSD">
+      </div>
+      <div class="input-group">
+        <label class="input-label">Linked Profile (Auto-Apply)</label>
+        <select id="acc-modal-profile">
+          <option value="">(None - Keep current)</option>
+        </select>
+      </div>
+    </div>
+    <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem;">
+      <button class="btn btn-secondary" onclick="closeAccountModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveAccountModal()">💾 Save Account</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast-container" id="toast-container"></div>
 
 <script>
   let symbolsData = {};
   let lotRulesData = { default_multiplier: 1.0, min_lot: 0.01, rules: {} };
+  let profilesData = { active_profile: '', presets: {} };
+  let accountsData = { active_master_id: '', active_slave_id: '', master_accounts: [], slave_accounts: [] };
   let rawViewStates = { symbols: false, 'lot-rules': false };
 
   function showToast(msg, type = 'success') {
@@ -820,32 +922,37 @@
     try {
       const data = await fetchJSON('/api/status');
       
-      // Vantage Badge
+      const masterLbl = document.getElementById('master-label');
+      const slaveLbl = document.getElementById('slave-label');
+      if (masterLbl) masterLbl.innerText = data.active_master_name || 'Master';
+      if (slaveLbl) slaveLbl.innerText = data.active_slave_name || 'Slave';
+
+      // Master Badge
       const vDot = document.getElementById('vantage-dot');
       const vText = document.getElementById('vantage-text');
       const vBadge = document.getElementById('vantage-badge');
       if (data.vantage && data.vantage.connected) {
         vDot.className = 'dot online';
         vText.innerHTML = `Online <span class="badge-ip">(${escapeHtml(data.vantage.addr)})</span>`;
-        vBadge.title = `Vantage EA: ${data.vantage.addr}`;
+        vBadge.title = `Master EA: ${data.vantage.addr}`;
       } else {
         vDot.className = 'dot offline';
         vText.innerText = 'Offline';
-        vBadge.title = 'Vantage EA: Offline';
+        vBadge.title = 'Master EA: Offline';
       }
 
-      // FTMO Badge
+      // Slave Badge
       const fDot = document.getElementById('ftmo-dot');
       const fText = document.getElementById('ftmo-text');
       const fBadge = document.getElementById('ftmo-badge');
       if (data.ftmo && data.ftmo.connected) {
         fDot.className = 'dot online';
         fText.innerHTML = `Online <span class="badge-ip">(${escapeHtml(data.ftmo.addr)})</span>`;
-        fBadge.title = `FTMO EA: ${data.ftmo.addr}`;
+        fBadge.title = `Slave EA: ${data.ftmo.addr}`;
       } else {
         fDot.className = 'dot offline';
         fText.innerText = 'Offline';
-        fBadge.title = 'FTMO EA: Offline';
+        fBadge.title = 'Slave EA: Offline';
       }
 
       // Render Logs
@@ -1056,7 +1163,7 @@
       return `
         <div class="input-group" style="max-width: 250px;">
           <label class="input-label">Symbol Multiplier</label>
-          <input type="number" step="0.1" min="0.01" inputmode="decimal" value="${r.multiplier ?? 1.0}" onchange="updateRuleVal('${escapeJs(sym)}', 'multiplier', parseFloat(this.value))">
+          <input type="number" step="0.01" min="0.01" inputmode="decimal" value="${r.multiplier ?? 1.0}" onchange="updateRuleVal('${escapeJs(sym)}', 'multiplier', parseFloat(this.value))">
         </div>
       `;
     } else if (ruleType === 'lot_map') {
@@ -1079,7 +1186,7 @@
         </div>
         <div class="input-group" style="max-width: 250px; margin-top: 0.5rem;">
           <label class="input-label">Fallback Multiplier (when lot not matched)</label>
-          <input type="number" step="0.1" min="0.01" inputmode="decimal" value="${r.default_multiplier ?? 1.0}" onchange="updateRuleVal('${escapeJs(sym)}', 'default_multiplier', parseFloat(this.value))">
+          <input type="number" step="0.01" min="0.01" inputmode="decimal" value="${r.default_multiplier ?? 1.0}" onchange="updateRuleVal('${escapeJs(sym)}', 'default_multiplier', parseFloat(this.value))">
         </div>
       `;
     }
@@ -1128,7 +1235,7 @@
   }
 
   function addNewRuleCard() {
-    const sym = prompt("Enter target symbol for new rule (e.g. US100.cash, XAUUSD):");
+    const sym = prompt("Enter symbol for new rule (Vantage source e.g. XAUUSD247, XAUUSD.tv, or FTMO target e.g. US100.cash):");
     if (!sym || !sym.trim()) return;
     const cleanSym = sym.trim();
     if (lotRulesData.rules[cleanSym]) {
@@ -1247,6 +1354,259 @@
     }
   }
 
+  // === PROFILES (PRESETS) ===
+  async function loadProfiles() {
+    try {
+      profilesData = await fetchJSON('/api/profiles');
+      renderProfileSelect();
+    } catch (e) {
+      console.error("Failed to load profiles:", e);
+    }
+  }
+
+  function renderProfileSelect() {
+    const sel = document.getElementById('profile-select');
+    const modalSel = document.getElementById('acc-modal-profile');
+    const presets = profilesData.presets || {};
+    const names = Object.keys(presets);
+    const active = profilesData.active_profile || '';
+
+    if (sel) {
+      sel.innerHTML = names.map(n => `
+        <option value="${escapeHtml(n)}" ${n === active ? 'selected' : ''}>
+          ${escapeHtml(n)}${n === active ? ' (Active)' : ''}
+        </option>
+      `).join('');
+    }
+    if (modalSel) {
+      modalSel.innerHTML = `<option value="">(None - Keep current)</option>` +
+        names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+    }
+  }
+
+  async function activateSelectedProfile() {
+    const sel = document.getElementById('profile-select');
+    const name = sel ? sel.value : '';
+    if (!name) return;
+    try {
+      const res = await fetchJSON('/api/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'activate', name })
+      });
+      profilesData = res.profiles || profilesData;
+      renderProfileSelect();
+      await loadSymbols();
+      await loadLotRules();
+      await refreshStatus();
+      showToast(`Activated profile: ${name}`);
+    } catch (e) {
+      // handled
+    }
+  }
+
+  async function saveCurrentAsProfile() {
+    const sel = document.getElementById('profile-select');
+    const defaultName = sel && sel.value ? sel.value : 'Vantage -> FTMO';
+    const name = prompt("Save current Symbol Mapping & Lot Rules into Profile Preset:", defaultName);
+    if (!name || !name.trim()) return;
+    const cleanName = name.trim();
+
+    if (!rawViewStates['lot-rules']) {
+      lotRulesData.default_multiplier = parseFloat(document.getElementById('global-multiplier').value) || 1.0;
+      lotRulesData.min_lot = parseFloat(document.getElementById('global-min-lot').value) || 0.01;
+    }
+
+    try {
+      const res = await fetchJSON('/api/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save',
+          name: cleanName,
+          symbol_map: symbolsData,
+          lot_rules: lotRulesData
+        })
+      });
+      profilesData = res.profiles || profilesData;
+      renderProfileSelect();
+      showToast(`Saved current settings to profile: ${cleanName}`);
+    } catch (e) {
+      // handled
+    }
+  }
+
+  async function deleteSelectedProfile() {
+    const sel = document.getElementById('profile-select');
+    const name = sel ? sel.value : '';
+    if (!name) return;
+    if (!confirm(`Delete profile preset '${name}'?`)) return;
+    try {
+      const res = await fetchJSON('/api/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', name })
+      });
+      profilesData = res.profiles || profilesData;
+      renderProfileSelect();
+      showToast(`Deleted profile: ${name}`);
+    } catch (e) {
+      // handled
+    }
+  }
+
+  // === ACCOUNTS (MASTER & SLAVE SWITCHER) ===
+  async function loadAccounts() {
+    try {
+      accountsData = await fetchJSON('/api/accounts');
+      renderAccounts();
+    } catch (e) {
+      console.error("Failed to load accounts:", e);
+    }
+  }
+
+  function renderAccountRoleList(role, list, activeId, containerId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    if (!list || list.length === 0) {
+      container.innerHTML = `<div style="color: var(--text-muted); text-align: center; padding: 1.5rem;">No ${role} accounts saved yet. Click "➕ Add" above to create one.</div>`;
+      return;
+    }
+
+    container.innerHTML = list.map(acc => {
+      const isActive = acc.id === activeId;
+      return `
+        <div class="rule-card" style="border-color: ${isActive ? 'var(--success)' : 'var(--card-border)'};">
+          <div class="rule-card-header">
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+              <span class="symbol-pill" style="font-size: 0.95rem;">${escapeHtml(acc.name)}</span>
+              ${acc.broker ? `<span class="badge" style="font-size: 0.72rem; padding: 0.15rem 0.5rem;">${escapeHtml(acc.broker)}</span>` : ''}
+              ${isActive ? `<span class="badge" style="background: rgba(16, 185, 129, 0.15); color: var(--success); border-color: var(--success); font-size: 0.72rem; padding: 0.15rem 0.5rem;">🟢 ACTIVE</span>` : ''}
+            </div>
+            <div style="display: flex; gap: 0.4rem;">
+              <button class="btn btn-primary btn-sm" onclick="activateAccount('${role}', '${escapeJs(acc.id)}', '${escapeJs(acc.name)}')">⚡ Switch</button>
+              <button class="btn btn-secondary btn-sm" onclick="openAccountModal('${role}', '${escapeJs(acc.id)}')" title="Edit">✏️</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteAccount('${role}', '${escapeJs(acc.id)}', '${escapeJs(acc.name)}')" title="Delete">🗑️</button>
+            </div>
+          </div>
+          <div style="font-size: 0.82rem; color: var(--text-muted); display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.4rem;">
+            <div><strong>Server:</strong> <span style="font-family: var(--font-mono); color: var(--text-main);">${escapeHtml(acc.server)}</span></div>
+            <div><strong>Login:</strong> <span style="font-family: var(--font-mono); color: var(--text-main);">${escapeHtml(acc.login)}</span></div>
+            <div><strong>Symbol:</strong> <span style="font-family: var(--font-mono);">${escapeHtml(acc.startup_symbol || 'XAUUSD')}</span></div>
+            ${acc.linked_profile ? `<div><strong>Profile:</strong> <span style="color: var(--accent);">${escapeHtml(acc.linked_profile)}</span></div>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderAccounts() {
+    renderAccountRoleList('master', accountsData.master_accounts || [], accountsData.active_master_id, 'master-accounts-list');
+    renderAccountRoleList('slave', accountsData.slave_accounts || [], accountsData.active_slave_id, 'slave-accounts-list');
+  }
+
+  function openAccountModal(role, accId = '') {
+    renderProfileSelect();
+    document.getElementById('acc-modal-role').value = role;
+    document.getElementById('acc-modal-id').value = accId;
+    const list = role === 'master' ? (accountsData.master_accounts || []) : (accountsData.slave_accounts || []);
+    const existing = accId ? list.find(a => a.id === accId) : null;
+
+    document.getElementById('account-modal-title').innerText = existing
+      ? `Edit ${role === 'master' ? 'Master' : 'Slave'} Account`
+      : `Add ${role === 'master' ? 'Master (Sender)' : 'Slave (Receiver)'} Account`;
+
+    document.getElementById('acc-modal-name').value = existing ? existing.name : '';
+    document.getElementById('acc-modal-broker').value = existing ? (existing.broker || '') : (role === 'master' ? 'Vantage' : 'FTMO');
+    document.getElementById('acc-modal-server').value = existing ? existing.server : '';
+    document.getElementById('acc-modal-login').value = existing ? existing.login : '';
+    document.getElementById('acc-modal-password').value = '';
+    document.getElementById('acc-modal-symbol').value = existing ? (existing.startup_symbol || 'XAUUSD') : 'XAUUSD';
+    document.getElementById('acc-modal-profile').value = existing ? (existing.linked_profile || '') : '';
+
+    document.getElementById('account-modal').style.display = 'flex';
+  }
+
+  function closeAccountModal() {
+    document.getElementById('account-modal').style.display = 'none';
+  }
+
+  async function saveAccountModal() {
+    const role = document.getElementById('acc-modal-role').value;
+    const account = {
+      id: document.getElementById('acc-modal-id').value,
+      name: document.getElementById('acc-modal-name').value.trim(),
+      broker: document.getElementById('acc-modal-broker').value.trim(),
+      server: document.getElementById('acc-modal-server').value.trim(),
+      login: document.getElementById('acc-modal-login').value.trim(),
+      password: document.getElementById('acc-modal-password').value,
+      startup_symbol: document.getElementById('acc-modal-symbol').value.trim() || 'XAUUSD',
+      linked_profile: document.getElementById('acc-modal-profile').value
+    };
+
+    if (!account.name || !account.server || !account.login) {
+      showToast("Please fill in Display Name, MT5 Server, and Login", "error");
+      return;
+    }
+
+    try {
+      const res = await fetchJSON('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'save', role, account })
+      });
+      accountsData = res.accounts || accountsData;
+      closeAccountModal();
+      renderAccounts();
+      showToast(`Saved ${role} account: ${account.name}`);
+    } catch (e) {
+      // handled
+    }
+  }
+
+  async function deleteAccount(role, id, name) {
+    if (!confirm(`Delete ${role} account '${name}'?`)) return;
+    try {
+      const res = await fetchJSON('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', role, id })
+      });
+      accountsData = res.accounts || accountsData;
+      renderAccounts();
+      showToast(`Deleted account: ${name}`);
+    } catch (e) {
+      // handled
+    }
+  }
+
+  async function activateAccount(role, id, name) {
+    const containerName = role === 'master' ? 'mt5_vantage' : 'mt5_ftmo';
+    if (!confirm(`Switch active ${role.toUpperCase()} account to '${name}'?\nThis will update mt5-server.ini and restart container '${containerName}'.`)) {
+      return;
+    }
+    try {
+      showToast(`Switching ${role} account to ${name}...`);
+      const res = await fetchJSON('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'activate', role, id, restart_container: true })
+      });
+      accountsData = res.accounts || accountsData;
+      if (res.profiles) {
+        profilesData = res.profiles;
+        renderProfileSelect();
+      }
+      renderAccounts();
+      await loadSymbols();
+      await loadLotRules();
+      await refreshStatus();
+      showToast(`Activated '${name}' (${res.docker_msg})`);
+    } catch (e) {
+      // handled
+    }
+  }
+
   function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, s => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[s]));
   }
@@ -1256,6 +1616,8 @@
 
   // === INITIALIZE ===
   window.addEventListener('DOMContentLoaded', () => {
+    loadProfiles();
+    loadAccounts();
     loadSymbols();
     loadLotRules();
     refreshStatus();

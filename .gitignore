@@ -13,3 +13,4 @@ __pycache__/
 # Web Dashboard backups and secrets
 backups/
 web_auth.json
+profiles/accounts.json

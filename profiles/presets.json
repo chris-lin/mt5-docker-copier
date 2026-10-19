@@ -1,0 +1,116 @@
+{
+  "active_profile": "Vantage -> FTMO",
+  "presets": {
+    "Vantage -> FTMO": {
+      "description": "Vantage Master to FTMO Slave",
+      "symbol_map": {
+        "NAS100.r": "US100.cash",
+        "NAS100": "US100.cash",
+        "XAUUSD247": "XAUUSD",
+        "XAUUSD.tv": "XAUUSD",
+        "US30.r": "US30.cash",
+        "GER40.r": "GER40.cash"
+      },
+      "lot_rules": {
+        "default_multiplier": 1.0,
+        "min_lot": 0.01,
+        "rules": {
+          "US100.cash": {
+            "lot_map": {
+              "0.1": 0.2,
+              "0.2": 0.4,
+              "0.5": 1.0,
+              "1.0": 2.0
+            },
+            "default_multiplier": 1.0
+          },
+          "ETHUSD": {
+            "multiplier": 0.5
+          },
+          "XAUUSD247": {
+            "multiplier": 0.25
+          },
+          "XAUUSD.tv": {
+            "multiplier": 25.0
+          },
+          "XAUUSD": {
+            "fixed_lot": 2
+          },
+          "EURUSD": {
+            "fixed_lot": 0.5
+          }
+        }
+      }
+    },
+    "Vantage -> FundedNext": {
+      "description": "Vantage Master to FundedNext Slave",
+      "symbol_map": {
+        "NAS100.r": "NDX100",
+        "NAS100": "NDX100",
+        "XAUUSD247": "XAUUSD",
+        "XAUUSD.tv": "XAUUSD",
+        "US30.r": "US30",
+        "GER40.r": "GER40"
+      },
+      "lot_rules": {
+        "default_multiplier": 1.0,
+        "min_lot": 0.01,
+        "rules": {
+          "XAUUSD247": {
+            "multiplier": 0.25
+          },
+          "XAUUSD.tv": {
+            "multiplier": 25.0
+          },
+          "XAUUSD": {
+            "fixed_lot": 2
+          }
+        }
+      }
+    },
+    "Exness -> FTMO": {
+      "description": "Exness Master to FTMO Slave",
+      "symbol_map": {
+        "USTECm": "US100.cash",
+        "USTEC": "US100.cash",
+        "XAUUSDm": "XAUUSD",
+        "US30m": "US30.cash",
+        "DE30m": "GER40.cash"
+      },
+      "lot_rules": {
+        "default_multiplier": 1.0,
+        "min_lot": 0.01,
+        "rules": {
+          "XAUUSD": {
+            "fixed_lot": 2.0
+          },
+          "US100.cash": {
+            "multiplier": 1.0
+          }
+        }
+      }
+    },
+    "Exness -> FundedNext": {
+      "description": "Exness Master to FundedNext Slave",
+      "symbol_map": {
+        "USTECm": "NDX100",
+        "USTEC": "NDX100",
+        "XAUUSDm": "XAUUSD",
+        "US30m": "US30",
+        "DE30m": "GER40"
+      },
+      "lot_rules": {
+        "default_multiplier": 1.0,
+        "min_lot": 0.01,
+        "rules": {
+          "XAUUSD": {
+            "fixed_lot": 2.0
+          },
+          "NDX100": {
+            "multiplier": 1.0
+          }
+        }
+      }
+    }
+  }
+}
