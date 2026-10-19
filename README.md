@@ -43,7 +43,9 @@ mt5-docker-copier/
 │   ├── accounts.example.json      # Template for Master/Slave MT5 credentials
 │   └── accounts.json              # Local MT5 credentials (git-ignored)
 ├── web/
-│   └── index.html                 # Single-page Mobile & Desktop Web Dashboard
+│   ├── index.html                 # Dashboard HTML layout
+│   ├── style.css                  # Responsive desktop & mobile stylesheet
+│   └── app.js                     # Dashboard frontend application logic
 ├── mql5/
 │   ├── VantageSender.mq5          # Master Sender EA (Winsock-based)
 │   └── FTMOReceiver.mq5           # Slave Receiver EA (Winsock + Dual-Anchor Tracking)

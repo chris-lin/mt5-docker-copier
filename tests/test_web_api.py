@@ -146,6 +146,13 @@ class TestWebAPI(unittest.TestCase):
             self.assertTrue(data["hub_running"])
             self.assertIn("vantage", data)
             self.assertIn("ftmo", data)
+            self.assertIn("vps", data)
+            vps = data["vps"]
+            self.assertIn("cpu_percent", vps)
+            self.assertIn("ram_percent", vps)
+            self.assertIn("disk_percent", vps)
+            self.assertIn("uptime_str", vps)
+            self.assertGreater(vps["disk_total_gb"], 0)
             self.assertIn("recent_logs", data)
 
     def test_get_and_post_symbols(self):
@@ -220,6 +227,19 @@ class TestWebAPI(unittest.TestCase):
             self.assertIn("MT5 Copier Dashboard", html)
             self.assertIn("Symbol Mapping", html)
             self.assertIn("Lot Sizing Rules", html)
+            self.assertIn("/style.css", html)
+            self.assertIn("/app.js", html)
+
+        # Verify split CSS and JS assets are served properly
+        req_css = urllib.request.Request(f"{self.server_url}/style.css", headers=self._auth_header())
+        with urllib.request.urlopen(req_css) as resp_css:
+            self.assertEqual(resp_css.status, 200)
+            self.assertIn("vps-strip-wrapper", resp_css.read().decode("utf-8"))
+
+        req_js = urllib.request.Request(f"{self.server_url}/app.js", headers=self._auth_header())
+        with urllib.request.urlopen(req_js) as resp_js:
+            self.assertEqual(resp_js.status, 200)
+            self.assertIn("renderVpsMetrics", resp_js.read().decode("utf-8"))
 
     def test_position_snapshot_stealth_sl_tp_and_partial_close(self):
         last_positions = {}

@@ -16,6 +16,9 @@ All notable changes to this project will be documented in this file.
   - Added dual-side account management in `copier_hub.py` (`GET /api/accounts` and `POST /api/accounts` with masked password responses) supporting both **Master Sender** (`mt5_vantage` container / `vantage_data/mt5-server.ini`) and **Slave Receiver** (`mt5_ftmo` container / `ftmo_data/mt5-server.ini`).
   - Switching a Master or Slave account automatically generates the corresponding UTF-16LE `mt5-server.ini`, optionally activates the account's linked profile preset (`linked_profile`), and restarts the target Docker container in a background thread (`docker restart mt5_vantage` or `docker restart mt5_ftmo`).
   - Added the **`👤 Accounts` tab** and modal editor in `web/index.html`, along with live active Master/Slave account name badges in the header.
+- **Zero-Overhead VPS System Load Strip**:
+  - Added `get_vps_metrics()` in `copier_hub.py` with a 5-second in-memory cache reading Linux `/proc/stat`, `/proc/meminfo`, `/proc/uptime`, and `shutil.disk_usage("/")` directly without spawning external subprocesses.
+  - Added a mobile-friendly, 1-line non-sticky collapsible VPS status strip (`CPU`, `RAM`, `Swap`, `Disk`, `Uptime`) to `web/index.html` with Page Visibility API (`document.hidden`) auto-pause when the browser tab is in the background.
 
 ---
 
