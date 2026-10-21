@@ -1,0 +1,162 @@
+{
+  "enabled": false,
+  "mode": "webhook",
+  "webhook_url": "",
+  "webhook_secret": "",
+  "tradovate": {
+    "env": "demo",
+    "username": "",
+    "password": "",
+    "account_spec": "",
+    "account_id": 0,
+    "access_token": "",
+    "cid": 0,
+    "sec": ""
+  },
+  "targets": [
+    {
+      "id": "lucid_main",
+      "name": "Lucid Trading 50K",
+      "prop_firm": "Lucid Trading",
+      "enabled": true,
+      "scale": 1.0,
+      "mode": "webhook",
+      "webhook_url": "",
+      "webhook_secret": "",
+      "tradovate": {
+        "env": "demo",
+        "username": "",
+        "password": "",
+        "account_spec": "",
+        "account_id": 0,
+        "access_token": ""
+      }
+    },
+    {
+      "id": "topstep_main",
+      "name": "Topstep 50K (TopstepX / Tradovate)",
+      "prop_firm": "Topstep",
+      "enabled": false,
+      "scale": 1.0,
+      "mode": "webhook",
+      "webhook_url": "",
+      "webhook_secret": "",
+      "tradovate": {
+        "env": "demo",
+        "username": "",
+        "password": "",
+        "account_spec": "",
+        "account_id": 0,
+        "access_token": ""
+      }
+    }
+  ],
+  "master_source": {
+    "mode": "hybrid",
+    "webhook_secret": "",
+    "tradovate_master": {
+      "enabled": false,
+      "poll_interval_sec": 1.0,
+      "env": "demo",
+      "account_spec": "",
+      "account_id": 0,
+      "access_token": ""
+    },
+    "reverse_map": {
+      "MGCZ6": {
+        "mt5_symbol": "XAUUSD",
+        "lot_per_contract": 0.1
+      },
+      "GCZ6": {
+        "mt5_symbol": "XAUUSD",
+        "lot_per_contract": 1.0
+      },
+      "MNQZ6": {
+        "mt5_symbol": "US100.cash",
+        "lot_per_contract": 0.1
+      },
+      "NQZ6": {
+        "mt5_symbol": "US100.cash",
+        "lot_per_contract": 1.0
+      },
+      "MBTZ6": {
+        "mt5_symbol": "BTCUSD",
+        "lot_per_contract": 0.1
+      }
+    }
+  },
+  "whitelist_rules": {
+    "XAUUSD247": {
+      "target_symbol": "MGCZ6",
+      "sizing_mode": "multiplier",
+      "multiplier": 2.5,
+      "fixed_contracts": 1,
+      "min_contracts": 1,
+      "max_contracts": 20
+    },
+    "XAUUSD.tv": {
+      "target_symbol": "MGCZ6",
+      "sizing_mode": "multiplier",
+      "multiplier": 250.0,
+      "fixed_contracts": 1,
+      "min_contracts": 1,
+      "max_contracts": 20
+    },
+    "XAUUSD.a": {
+      "target_symbol": "MGCZ6",
+      "sizing_mode": "multiplier",
+      "multiplier": 10.0,
+      "fixed_contracts": 1,
+      "min_contracts": 1,
+      "max_contracts": 20
+    },
+    "XAUUSD": {
+      "target_symbol": "MGCZ6",
+      "sizing_mode": "fixed",
+      "multiplier": 10.0,
+      "fixed_contracts": 2,
+      "min_contracts": 1,
+      "max_contracts": 20
+    },
+    "NAS100.r": {
+      "target_symbol": "MNQZ6",
+      "sizing_mode": "multiplier",
+      "multiplier": 10.0,
+      "fixed_contracts": 1,
+      "min_contracts": 1,
+      "max_contracts": 20
+    },
+    "NAS100.a": {
+      "target_symbol": "MNQZ6",
+      "sizing_mode": "multiplier",
+      "multiplier": 10.0,
+      "fixed_contracts": 1,
+      "min_contracts": 1,
+      "max_contracts": 20
+    },
+    "NAS100": {
+      "target_symbol": "MNQZ6",
+      "sizing_mode": "multiplier",
+      "multiplier": 10.0,
+      "fixed_contracts": 1,
+      "min_contracts": 1,
+      "max_contracts": 20
+    },
+    "US100.cash": {
+      "target_symbol": "MNQZ6",
+      "sizing_mode": "multiplier",
+      "multiplier": 10.0,
+      "fixed_contracts": 1,
+      "min_contracts": 1,
+      "max_contracts": 20
+    },
+    "BTCUSD": {
+      "target_symbol": "MBTZ6",
+      "sizing_mode": "multiplier",
+      "multiplier": 10.0,
+      "fixed_contracts": 1,
+      "min_contracts": 1,
+      "max_contracts": 10
+    }
+  }
+}

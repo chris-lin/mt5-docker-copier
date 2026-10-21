@@ -140,14 +140,16 @@ let symbolsData = {};
         fBadge.title = 'Slave EA: Offline';
       }
 
-      // Lucid Badge
+      // Futures Copier Badge
       const lDot = document.getElementById('lucid-dot');
       const lText = document.getElementById('lucid-text');
-      if (lDot && lText && data.lucid) {
-        if (data.lucid.enabled) {
+      const futStatus = data.futures || data.lucid;
+      if (lDot && lText && futStatus) {
+        if (futStatus.enabled && (futStatus.active_targets_count ?? 1) > 0) {
           lDot.className = 'dot online';
-          const modeLbl = data.lucid.mode === 'tradovate' ? 'API' : 'Webhook';
-          lText.innerText = `On (${modeLbl})`;
+          const names = futStatus.active_target_names || [];
+          const summaryLbl = names.length === 1 ? names[0] : `${futStatus.active_targets_count || 1} Active`;
+          lText.innerText = `On (${summaryLbl})`;
         } else {
           lDot.className = 'dot';
           lText.innerText = 'Off';
@@ -813,38 +815,185 @@ let symbolsData = {};
     return String(str).replace(/['"\\]/g, '\\$&');
   }
 
-  // === LUCID FUTURES PARALLEL COPIER ===
-  let lucidData = { enabled: false, mode: 'webhook', whitelist_rules: {}, tradovate: {} };
+  // === MULTI-PROP FUTURES PARALLEL COPIER & UNIVERSAL MASTER ===
+  let lucidData = {
+    enabled: false,
+    mode: 'webhook',
+    targets: [],
+    master_source: { mode: 'hybrid', webhook_secret: '', tradovate_master: {}, reverse_map: {} },
+    whitelist_rules: {},
+    tradovate: {}
+  };
 
   async function loadLucid() {
     try {
-      lucidData = await fetchJSON('/api/lucid');
+      lucidData = await fetchJSON('/api/futures');
       renderLucid();
     } catch (e) {
-      console.error("Failed to load Lucid config:", e);
+      console.error("Failed to load Futures Copier config:", e);
     }
   }
 
-  function toggleLucidModeFields() {
-    const mode = document.getElementById('lucid-mode').value;
-    document.getElementById('lucid-webhook-box').style.display = mode === 'webhook' ? 'block' : 'none';
-    document.getElementById('lucid-tradovate-box').style.display = mode === 'tradovate' ? 'block' : 'none';
+  function toggleTvMasterFields() {
+    const el = document.getElementById('tv-master-enabled');
+    const box = document.getElementById('tv-master-box');
+    if (el && box) {
+      box.style.display = el.value === 'true' ? 'block' : 'none';
+    }
   }
 
   function renderLucid() {
     document.getElementById('lucid-enabled').value = lucidData.enabled ? 'true' : 'false';
-    document.getElementById('lucid-mode').value = lucidData.mode || 'webhook';
-    document.getElementById('lucid-webhook-url').value = lucidData.webhook_url || '';
-    document.getElementById('lucid-webhook-secret').value = lucidData.webhook_secret || '';
 
-    const tv = lucidData.tradovate || {};
-    document.getElementById('lucid-tv-env').value = tv.env || 'demo';
-    document.getElementById('lucid-tv-spec').value = tv.account_spec || '';
-    document.getElementById('lucid-tv-acc-id').value = tv.account_id || '';
-    document.getElementById('lucid-tv-token').value = tv.access_token || '';
+    const ms = lucidData.master_source || {};
+    const tvM = ms.tradovate_master || {};
+    const tvMasterEl = document.getElementById('tv-master-enabled');
+    if (tvMasterEl) {
+      tvMasterEl.value = tvM.enabled ? 'true' : 'false';
+      document.getElementById('master-webhook-secret').value = ms.webhook_secret || '';
+      document.getElementById('tv-master-env').value = tvM.env || 'demo';
+      document.getElementById('tv-master-acc-id').value = tvM.account_id || '';
+      document.getElementById('tv-master-interval').value = tvM.poll_interval_sec ?? 1.0;
+      document.getElementById('tv-master-token').value = tvM.access_token || '';
+      toggleTvMasterFields();
+    }
 
-    toggleLucidModeFields();
+    renderFuturesTargetsList();
     renderLucidRulesTable();
+  }
+
+  function renderFuturesTargetsList() {
+    const container = document.getElementById('futures-targets-list');
+    if (!container) return;
+    const targets = lucidData.targets || [];
+    if (targets.length === 0) {
+      container.innerHTML = `<div style="color: var(--text-muted); text-align: center; padding: 1.25rem; border: 1px dashed var(--card-border); border-radius: 8px;">No Futures Prop Firm accounts configured. Click "➕ Add Prop Firm Account" to add Lucid Trading, Topstep, or Apex.</div>`;
+      return;
+    }
+
+    container.innerHTML = targets.map(t => {
+      const isEnabled = t.enabled !== false;
+      const modeLbl = t.mode === 'tradovate' ? '⚡ Tradovate Direct API' : '🔗 Webhook Bridge';
+      const detailStr = t.mode === 'tradovate'
+        ? `${escapeHtml((t.tradovate && t.tradovate.env) || 'demo').toUpperCase()} · Spec: ${escapeHtml((t.tradovate && t.tradovate.account_spec) || '(Not set)')}`
+        : `URL: ${escapeHtml(t.webhook_url || '(Simulated / Not set)')}`;
+
+      return `
+        <div class="rule-card" style="border-color: ${isEnabled ? 'var(--success)' : 'var(--card-border)'}; margin-bottom: 0.75rem;">
+          <div class="rule-card-header">
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+              <span class="symbol-pill" style="font-size: 0.95rem;">${escapeHtml(t.name)}</span>
+              <span class="badge" style="font-size: 0.72rem; padding: 0.15rem 0.5rem; color: var(--accent);">${escapeHtml(t.prop_firm || 'Futures')}</span>
+              <span class="badge" style="font-size: 0.72rem; padding: 0.15rem 0.5rem;">Scale: ${Number(t.scale || 1.0).toFixed(1)}x</span>
+              ${isEnabled
+                ? `<span class="badge" style="background: rgba(16, 185, 129, 0.15); color: var(--success); border-color: var(--success); font-size: 0.72rem; padding: 0.15rem 0.5rem;">🟢 ENABLED</span>`
+                : `<span class="badge" style="font-size: 0.72rem; padding: 0.15rem 0.5rem; color: var(--text-muted);">⏸️ PAUSED</span>`
+              }
+            </div>
+            <div style="display: flex; gap: 0.4rem;">
+              <button class="btn btn-secondary btn-sm" onclick="toggleFuturesTargetStatus('${escapeJs(t.id)}')">${isEnabled ? '⏸️ Pause' : '▶️ Enable'}</button>
+              <button class="btn btn-secondary btn-sm" onclick="openFuturesTargetModal('${escapeJs(t.id)}')" title="Edit">✏️</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteFuturesTarget('${escapeJs(t.id)}', '${escapeJs(t.name)}')" title="Delete">🗑️</button>
+            </div>
+          </div>
+          <div style="font-size: 0.8rem; color: var(--text-muted); display: flex; gap: 1.25rem; flex-wrap: wrap;">
+            <div><strong>Mode:</strong> <span style="color: var(--text-main);">${modeLbl}</span></div>
+            <div><strong>Endpoint:</strong> <span style="font-family: var(--font-mono); color: var(--text-main);">${detailStr}</span></div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function toggleFtModalMode() {
+    const mode = document.getElementById('ft-modal-mode').value;
+    document.getElementById('ft-modal-webhook-box').style.display = mode === 'webhook' ? 'block' : 'none';
+    document.getElementById('ft-modal-tradovate-box').style.display = mode === 'tradovate' ? 'block' : 'none';
+  }
+
+  function openFuturesTargetModal(targetId = '') {
+    const targets = lucidData.targets || [];
+    const existing = targetId ? targets.find(t => t.id === targetId) : null;
+
+    document.getElementById('futures-target-modal-title').innerText = existing
+      ? `Edit Futures Prop Account: ${existing.name}`
+      : 'Add Futures Prop Account (Lucid / Topstep / Apex)';
+    document.getElementById('ft-modal-id').value = existing ? existing.id : '';
+    document.getElementById('ft-modal-name').value = existing ? existing.name : '';
+    document.getElementById('ft-modal-firm').value = existing ? (existing.prop_firm || 'Lucid Trading') : 'Topstep';
+    document.getElementById('ft-modal-enabled').value = (!existing || existing.enabled !== false) ? 'true' : 'false';
+    document.getElementById('ft-modal-scale').value = existing ? (existing.scale ?? 1.0) : 1.0;
+    document.getElementById('ft-modal-mode').value = existing ? (existing.mode || 'webhook') : 'webhook';
+
+    document.getElementById('ft-modal-wh-url').value = existing ? (existing.webhook_url || '') : '';
+    document.getElementById('ft-modal-wh-secret').value = existing ? (existing.webhook_secret || '') : '';
+
+    const tv = (existing && existing.tradovate) || {};
+    document.getElementById('ft-modal-tv-env').value = tv.env || 'demo';
+    document.getElementById('ft-modal-tv-spec').value = tv.account_spec || '';
+    document.getElementById('ft-modal-tv-acc-id').value = tv.account_id || '';
+    document.getElementById('ft-modal-tv-token').value = tv.access_token || '';
+
+    toggleFtModalMode();
+    document.getElementById('futures-target-modal').style.display = 'flex';
+  }
+
+  function closeFuturesTargetModal() {
+    document.getElementById('futures-target-modal').style.display = 'none';
+  }
+
+  function saveFuturesTargetModal() {
+    const id = document.getElementById('ft-modal-id').value.trim() || `futures_${Date.now()}`;
+    const name = document.getElementById('ft-modal-name').value.trim();
+    const prop_firm = document.getElementById('ft-modal-firm').value;
+    if (!name) {
+      showToast('Please enter an Account Display Name (e.g. Topstep 50K)', 'error');
+      return;
+    }
+
+    const record = {
+      id,
+      name,
+      prop_firm,
+      enabled: document.getElementById('ft-modal-enabled').value === 'true',
+      scale: Math.max(0.1, parseFloat(document.getElementById('ft-modal-scale').value) || 1.0),
+      mode: document.getElementById('ft-modal-mode').value,
+      webhook_url: document.getElementById('ft-modal-wh-url').value.trim(),
+      webhook_secret: document.getElementById('ft-modal-wh-secret').value || '••••••••',
+      tradovate: {
+        env: document.getElementById('ft-modal-tv-env').value,
+        account_spec: document.getElementById('ft-modal-tv-spec').value.trim(),
+        account_id: parseInt(document.getElementById('ft-modal-tv-acc-id').value, 10) || 0,
+        access_token: document.getElementById('ft-modal-tv-token').value || '••••••••'
+      }
+    };
+
+    if (!Array.isArray(lucidData.targets)) lucidData.targets = [];
+    const idx = lucidData.targets.findIndex(t => t.id === id);
+    if (idx >= 0) {
+      lucidData.targets[idx] = record;
+    } else {
+      lucidData.targets.push(record);
+    }
+
+    closeFuturesTargetModal();
+    renderFuturesTargetsList();
+    saveLucidConfig();
+  }
+
+  function toggleFuturesTargetStatus(id) {
+    const t = (lucidData.targets || []).find(item => item.id === id);
+    if (!t) return;
+    t.enabled = !(t.enabled !== false);
+    renderFuturesTargetsList();
+    saveLucidConfig();
+  }
+
+  function deleteFuturesTarget(id, name) {
+    if (!confirm(`Remove Futures target account '${name}'?`)) return;
+    lucidData.targets = (lucidData.targets || []).filter(t => t.id !== id);
+    renderFuturesTargetsList();
+    saveLucidConfig();
   }
 
   function renderLucidRulesTable() {
@@ -867,14 +1016,14 @@ let symbolsData = {};
           <td>
             <div class="mobile-card-top">
               <div>
-                <div class="mobile-only-label">Vantage Symbol (Whitelist)</div>
+                <div class="mobile-only-label">Master Symbol (Whitelist)</div>
                 <span class="symbol-pill">${escapeHtml(src)}</span>
               </div>
               <button class="btn btn-danger btn-sm mobile-only-delete" onclick="deleteLucidRule('${escapeJs(src)}')">🗑️</button>
             </div>
           </td>
           <td>
-            <div class="mobile-only-label">Lucid Futures Contract</div>
+            <div class="mobile-only-label">Target Futures Contract</div>
             <input type="text" value="${escapeHtml(r.target_symbol || '')}" onchange="updateLucidRule('${escapeJs(src)}', 'target_symbol', this.value)" style="width: 120px; font-family: var(--font-mono);">
           </td>
           <td>
@@ -958,29 +1107,39 @@ let symbolsData = {};
   }
 
   async function saveLucidConfig() {
+    const firstTarget = (lucidData.targets && lucidData.targets[0]) || {};
+    const curMs = lucidData.master_source || {};
     const payload = {
       enabled: document.getElementById('lucid-enabled').value === 'true',
-      mode: document.getElementById('lucid-mode').value,
-      webhook_url: document.getElementById('lucid-webhook-url').value.trim(),
-      webhook_secret: document.getElementById('lucid-webhook-secret').value,
-      tradovate: {
-        env: document.getElementById('lucid-tv-env').value,
-        account_spec: document.getElementById('lucid-tv-spec').value.trim(),
-        account_id: parseInt(document.getElementById('lucid-tv-acc-id').value, 10) || 0,
-        access_token: document.getElementById('lucid-tv-token').value
+      mode: firstTarget.mode || 'webhook',
+      webhook_url: firstTarget.webhook_url || '',
+      webhook_secret: firstTarget.webhook_secret || '••••••••',
+      tradovate: firstTarget.tradovate || {},
+      targets: lucidData.targets || [],
+      master_source: {
+        mode: 'hybrid',
+        webhook_secret: document.getElementById('master-webhook-secret') ? (document.getElementById('master-webhook-secret').value || '••••••••') : '••••••••',
+        tradovate_master: {
+          enabled: document.getElementById('tv-master-enabled') ? (document.getElementById('tv-master-enabled').value === 'true') : false,
+          env: document.getElementById('tv-master-env') ? document.getElementById('tv-master-env').value : 'demo',
+          account_id: document.getElementById('tv-master-acc-id') ? (parseInt(document.getElementById('tv-master-acc-id').value, 10) || 0) : 0,
+          poll_interval_sec: document.getElementById('tv-master-interval') ? (parseFloat(document.getElementById('tv-master-interval').value) || 1.0) : 1.0,
+          access_token: document.getElementById('tv-master-token') ? (document.getElementById('tv-master-token').value || '••••••••') : '••••••••'
+        },
+        reverse_map: curMs.reverse_map || {}
       },
       whitelist_rules: lucidData.whitelist_rules || {}
     };
     try {
-      const res = await fetchJSON('/api/lucid', {
+      const res = await fetchJSON('/api/futures', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      lucidData = res.lucid || lucidData;
+      lucidData = res.futures || res.lucid || lucidData;
       renderLucid();
       await refreshStatus();
-      showToast('Saved Lucid Trading settings!');
+      showToast('Saved Futures Copier settings!');
     } catch (e) {
       // handled
     }

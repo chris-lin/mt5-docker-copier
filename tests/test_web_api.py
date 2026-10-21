@@ -84,9 +84,7 @@ class TestWebAPI(unittest.TestCase):
         copier_hub.SLAVE_INI_FILE = cls.orig_slave_ini
 
     def setUp(self):
-        with copier_hub.lucid_lock:
-            copier_hub.lucid_open_tickets.clear()
-            copier_hub.lucid_dispatched_orders.clear()
+        copier_hub.reset_futures_runtime_state()
         with open(copier_hub.SYMBOL_MAP_FILE, "w", encoding="utf-8") as f:
             json.dump({"NAS100.r": "US100.cash"}, f)
         with open(copier_hub.LOT_RULES_FILE, "w", encoding="utf-8") as f:
@@ -517,6 +515,135 @@ class TestWebAPI(unittest.TestCase):
         self.assertEqual(len(lucid_orders), 5)
         self.assertEqual(lucid_orders[3], {"event": "CLOSE", "ticket": 5001, "src_symbol": "NAS100.r", "symbol": "MNQZ6", "action": "Sell", "quantity": 2})
         self.assertEqual(lucid_orders[4], {"event": "CLOSE", "ticket": 5003, "src_symbol": "BTCUSD", "symbol": "MBTZ6", "action": "Sell", "quantity": 2})
+
+    def test_multi_prop_futures_targets_and_universal_master_webhook(self):
+        # 1. Configure 2 simultaneous Futures Prop Firm targets: Lucid Trading (1.0x) and Topstep (2.0x)
+        futures_payload = {
+            "enabled": True,
+            "targets": [
+                {
+                    "id": "lucid_1",
+                    "name": "Lucid Trading 50K",
+                    "prop_firm": "Lucid Trading",
+                    "enabled": True,
+                    "scale": 1.0,
+                    "mode": "webhook",
+                    "webhook_url": ""
+                },
+                {
+                    "id": "topstep_1",
+                    "name": "Topstep 100K",
+                    "prop_firm": "Topstep",
+                    "enabled": True,
+                    "scale": 2.0,
+                    "mode": "webhook",
+                    "webhook_url": ""
+                }
+            ],
+            "master_source": {
+                "mode": "hybrid",
+                "webhook_secret": "tv_master_secret",
+                "reverse_map": {
+                    "MNQZ6": {"mt5_symbol": "US100.cash", "lot_per_contract": 0.10},
+                    "MGCZ6": {"mt5_symbol": "XAUUSD", "lot_per_contract": 0.10}
+                }
+            },
+            "whitelist_rules": {
+                "NAS100.r": {"target_symbol": "MNQZ6", "sizing_mode": "multiplier", "multiplier": 10.0, "fixed_contracts": 1, "min_contracts": 1, "max_contracts": 20},
+                "XAUUSD247": {"target_symbol": "MGCZ6", "sizing_mode": "multiplier", "multiplier": 2.5, "fixed_contracts": 1, "min_contracts": 1, "max_contracts": 20}
+            }
+        }
+        req_cfg = urllib.request.Request(
+            f"{self.server_url}/api/futures",
+            data=json.dumps(futures_payload).encode("utf-8"),
+            headers={**self._auth_header(), "Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req_cfg) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            self.assertTrue(res["success"])
+            self.assertEqual(len(res["futures"]["targets"]), 2)
+
+        # 2. Place a TradingView / Tradovate Futures Master order via POST /api/master-webhook (Buy 2 MNQZ6)
+        wh_open = {
+            "secret": "tv_master_secret",
+            "symbol": "MNQZ6",
+            "action": "buy",
+            "quantity": 2,
+            "ticket": 88001
+        }
+        req_wh1 = urllib.request.Request(
+            f"{self.server_url}/api/master-webhook",
+            data=json.dumps(wh_open).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req_wh1) as resp:
+            res_wh1 = json.loads(resp.read().decode("utf-8"))
+            self.assertTrue(res_wh1["success"])
+            # FTMO receives reverse-mapped US100.cash (2 contracts * 0.10 = 0.20 base, or 2.0 * 2.0 = 4.0 from US100.cash rule in setUp)
+            self.assertEqual(len(res_wh1["commands_sent"]), 1)
+            self.assertTrue(res_wh1["commands_sent"][0].startswith("OPEN;US100.cash;0;"))
+
+        # Verify BOTH Lucid Trading (2 MNQZ6) and Topstep (4 MNQZ6 at 2.0x scale) received the order!
+        with copier_hub.lucid_lock:
+            fut_orders = list(copier_hub.futures_dispatched_orders)
+        self.assertEqual(len(fut_orders), 2)
+        self.assertEqual(fut_orders[0]["target_id"], "lucid_1")
+        self.assertEqual(fut_orders[0]["quantity"], 2)
+        self.assertEqual(fut_orders[1]["target_id"], "topstep_1")
+        self.assertEqual(fut_orders[1]["quantity"], 4)
+
+        # 3. Partial close 1 contract on TradingView Master (2 -> 1, 50% reduction)
+        wh_partial = {
+            "secret": "tv_master_secret",
+            "symbol": "MNQZ6",
+            "action": "partial",
+            "quantity": 1,
+            "ticket": 88001
+        }
+        req_wh2 = urllib.request.Request(
+            f"{self.server_url}/api/master-webhook",
+            data=json.dumps(wh_partial).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req_wh2) as resp:
+            res_wh2 = json.loads(resp.read().decode("utf-8"))
+            self.assertEqual(res_wh2["commands_sent"], ["PARTIAL;US100.cash;0.5;88001"])
+
+        with copier_hub.lucid_lock:
+            fut_orders = list(copier_hub.futures_dispatched_orders)
+        self.assertEqual(len(fut_orders), 4)
+        self.assertEqual(fut_orders[2]["target_id"], "lucid_1")
+        self.assertEqual(fut_orders[2]["quantity"], 1)  # 50% of 2 = 1
+        self.assertEqual(fut_orders[3]["target_id"], "topstep_1")
+        self.assertEqual(fut_orders[3]["quantity"], 2)  # 50% of 4 = 2
+
+        # 4. Full close on TradingView Master
+        wh_close = {
+            "secret": "tv_master_secret",
+            "symbol": "MNQZ6",
+            "action": "close",
+            "ticket": 88001
+        }
+        req_wh3 = urllib.request.Request(
+            f"{self.server_url}/api/master-webhook",
+            data=json.dumps(wh_close).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req_wh3) as resp:
+            res_wh3 = json.loads(resp.read().decode("utf-8"))
+            self.assertEqual(res_wh3["commands_sent"], ["CLOSE;US100.cash;88001"])
+
+        with copier_hub.lucid_lock:
+            fut_orders = list(copier_hub.futures_dispatched_orders)
+        self.assertEqual(len(fut_orders), 6)
+        self.assertEqual(fut_orders[4]["event"], "CLOSE")
+        self.assertEqual(fut_orders[4]["quantity"], 1)
+        self.assertEqual(fut_orders[5]["event"], "CLOSE")
+        self.assertEqual(fut_orders[5]["quantity"], 2)
 
 if __name__ == "__main__":
     unittest.main()

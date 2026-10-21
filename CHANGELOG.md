@@ -5,16 +5,20 @@ All notable changes to this project will be documented in this file.
 ## [v3.0] - 2026-10-21
 
 ### Added
-- **Lucid Trading (Tradovate / Webhook) Parallel Futures Copier (`profiles/lucid.example.json`)**:
-  - Added a lightweight, non-blocking parallel futures execution layer in `copier_hub.py` (`GET /api/lucid`, `POST /api/lucid`, `calculate_lucid_order()`, and `dispatch_lucid_order()`) supporting both **Webhook Bridge** mode and **Tradovate Direct REST API** mode without requiring a third Docker container.
-  - Implemented strict whitelist symbol filtering (pre-configured for Gold `MGCZ6`, Nasdaq `MNQZ6`, and Micro Bitcoin `MBTZ6`), whole integer contract rounding, and Netting partial/full close tracking (`lucid_open_tickets`).
-  - Added the **`🚀 Lucid Futures` tab** and header status badge to the Web Dashboard.
-- **Zero-Overhead VPS System Load Strip**:
-  - Added `get_vps_metrics()` in `copier_hub.py` with a 5-second in-memory cache reading Linux `/proc/stat`, `/proc/meminfo`, `/proc/uptime`, and `shutil.disk_usage("/")` directly without spawning external subprocesses.
+- **Multi-Prop Futures Parallel Copier (`futures_copier.py`)**:
+  - Added a lightweight, non-blocking parallel futures execution engine (`GET /api/futures`, `POST /api/futures`, with backward-compatible `/api/lucid`) supporting multiple simultaneous Futures Prop Firm target accounts (e.g., **Lucid Trading**, **Topstep / TopstepX**, **Apex**, **TakeProfitTrader**) via **Webhook Bridge** or **Tradovate Direct REST API** without requiring additional Docker containers.
+  - Each futures target account supports independent enable/pause toggles and per-account contract scaling (`scale`), alongside strict whitelist symbol filtering (Gold `MGCZ6`, Nasdaq `MNQZ6`, Micro Bitcoin `MBTZ6`), whole integer contract rounding, and Netting partial/full close tracking.
+  - Added the **`🚀 Futures Copier` tab** and live active-targets header badge to the Web Dashboard.
+- **Universal Multi-Source Order Entry (MT5 / TradingView CFD / TradingView Tradovate Futures)**:
+  - **MT5 Direct & TradingView CFD (Vantage / Pepperstone / Exness)**: Supports placing orders directly in MT5 or via TradingView bound to MT5-synced CFD accounts, with built-in profile presets including `Pepperstone -> FTMO` and `Tradovate (Futures) -> FTMO`.
+  - **TradingView Futures Master (`Tradovate Master Poller` & `POST /api/master-webhook`)**: Supports placing orders on TradingView bound to a Futures broker (Tradovate) or via TradingView Alert Webhooks, automatically reverse-mapping futures contracts (`MNQZ6 -> US100.cash`, `MGCZ6 -> XAUUSD`, `MBTZ6 -> BTCUSD`) to copy into **FTMO (MT5 Slave)** and all enabled **Futures Prop Firms** simultaneously.
+- **Zero-Overhead VPS System Load Strip (`vps_monitor.py`)**:
+  - Added `get_vps_metrics()` with a 5-second in-memory cache reading Linux `/proc/stat`, `/proc/meminfo`, `/proc/uptime`, and `shutil.disk_usage("/")` directly without spawning external subprocesses.
   - Added a mobile-friendly, 1-line non-sticky collapsible VPS status strip (`CPU`, `RAM`, `Swap`, `Disk`, `Uptime`) to `web/index.html` with Page Visibility API (`document.hidden`) auto-pause when the browser tab is in the background.
 
 ### Changed
-- **Modular Web Dashboard Architecture**:
+- **Modular Backend & Web Dashboard Architecture**:
+  - Split backend logic into `copier_hub.py` (core TCP & HTTP routing), `futures_copier.py` (multi-prop futures & TradingView/Tradovate master engine), and `vps_monitor.py` (cached host resource monitor).
   - Split the single-file `web/index.html` into dedicated `web/index.html` (HTML structure), `web/style.css` (responsive desktop & mobile stylesheet), and `web/app.js` (frontend application logic), served natively by `copier_hub.py`.
 
 ---

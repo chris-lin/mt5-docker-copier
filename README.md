@@ -12,9 +12,9 @@ While the default container names use `mt5_vantage` (Master / Signal Source) and
 
 * **Headless Docker Environment**: Runs MT5 instances inside minimal Linux containers via Wine without requiring an X11 server or GUI.
 * **Web Dashboard & Hot-Reload**: Built-in, zero-dependency browser management interface (`http://127.0.0.1:8080`) optimized for desktop and mobile browsers with live EA status indicators and HTTP Basic Auth security.
-* **Lucid Trading Parallel Futures Copier (`v3.0`)**: Broadcasts whitelisted trades (`MGC`/`GC` Gold, `MNQ`/`NQ` Nasdaq, `MBT`/`BTC` Bitcoin) in parallel to **Lucid Trading** (via Tradovate Direct REST API or Webhook Bridge) with automatic integer contract rounding and Netting partial/full close tracking—without needing a third Docker container.
+* **Multi-Prop Futures Parallel Copier & Universal Master (`v3.0`)**: Broadcasts whitelisted trades (`MGC`/`GC` Gold, `MNQ`/`NQ` Nasdaq, `MBT`/`BTC` Bitcoin) in parallel to multiple Futures Prop Firms (**Lucid Trading**, **Topstep / TopstepX**, **Apex**, etc.) via Tradovate Direct REST API or Webhook Bridge with automatic integer contract rounding, per-account contract scaling, and reverse Futures-to-MT5 copying when ordering from TradingView (bound to Tradovate or CFD brokers).
 * **Zero-Overhead VPS Load Monitor (`v3.0`)**: 1-line collapsible host resource bar (`CPU`, `RAM`, `Swap`, `Disk`, `Uptime`) powered by 5-second cached `/proc` reads and background tab auto-pause (`document.hidden`).
-* **Multi-Broker Profile Presets (`v2.0`)**: Bundle `symbol_map` and `lot_rules` into named presets (`Vantage -> FTMO`, `Vantage -> FundedNext`, `Exness -> FTMO`, `Exness -> FundedNext`) stored in `profiles/presets.json` for instant, zero-downtime hot-swapping.
+* **Multi-Broker Profile Presets (`v2.0`)**: Bundle `symbol_map` and `lot_rules` into named presets (`Vantage -> FTMO`, `Pepperstone -> FTMO`, `Tradovate (Futures) -> FTMO`, `Exness -> FTMO`, etc.) for instant, zero-downtime hot-swapping.
 * **Dual-Side MT5 Account Switcher (`v2.0`)**: Manage and switch both **Master (Sender)** and **Slave (Receiver)** MT5 accounts directly from the Web UI (`👤 Accounts` tab). Automatically generates UTF-16LE `mt5-server.ini` files, activates linked profile presets, and restarts the target Docker container in the background.
 * **Decoupled Mapping & Sizing Engine**:
   * **Symbol Mapping**: Resolves contract naming discrepancies across brokers (e.g., `NAS100.r` -> `US100.cash`, `XAUUSDm` -> `XAUUSD`).
@@ -37,12 +37,14 @@ mt5-docker-copier/
 ├── setup_firewall.sh              # Automated host firewall configuration
 ├── search_servers.sh              # Headless broker server search automation
 ├── copier_hub.py                  # Python TCP routing hub & Web Dashboard (v3.0)
+├── futures_copier.py              # Multi-Prop Futures Copier & TradingView/Tradovate Master engine
+├── vps_monitor.py                 # Zero-dependency 5s cached VPS resource monitor
 ├── config_templates/              # Tracked configuration templates
 │   ├── symbol_map.example.json    # Template for symbol_map.json
 │   ├── lot_rules.example.json     # Template for lot_rules.json
 │   ├── presets.example.json       # Template for multi-broker profile presets
 │   ├── accounts.example.json      # Template for Master/Slave MT5 credentials
-│   ├── lucid.example.json         # Template for Lucid Trading parallel copier
+│   ├── futures_copier.example.json# Template for Multi-Prop Futures parallel copier
 │   ├── mt5-server.ini.example     # MT5 startup config template
 │   └── common.ini.example         # Global MT5 flags (AllowDllImport, ExpertsEnable)
 ├── web/

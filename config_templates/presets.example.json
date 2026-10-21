@@ -42,6 +42,62 @@
         }
       }
     },
+    "Pepperstone -> FTMO": {
+      "description": "Pepperstone (TradingView / MT5) Master to FTMO Slave",
+      "symbol_map": {
+        "NAS100.a": "US100.cash",
+        "NAS100": "US100.cash",
+        "XAUUSD.a": "XAUUSD",
+        "XAUUSD": "XAUUSD",
+        "US30.a": "US30.cash",
+        "US30": "US30.cash",
+        "GER40.a": "GER40.cash",
+        "BTCUSD.a": "BTCUSD"
+      },
+      "lot_rules": {
+        "default_multiplier": 1.0,
+        "min_lot": 0.01,
+        "rules": {
+          "XAUUSD": {
+            "multiplier": 1.0
+          },
+          "US100.cash": {
+            "multiplier": 1.0
+          }
+        }
+      }
+    },
+    "Tradovate (Futures) -> FTMO": {
+      "description": "TradingView (Tradovate Futures Master) to FTMO Slave",
+      "symbol_map": {
+        "MGCZ6": "XAUUSD",
+        "GCZ6": "XAUUSD",
+        "MNQZ6": "US100.cash",
+        "NQZ6": "US100.cash",
+        "MBTZ6": "BTCUSD"
+      },
+      "lot_rules": {
+        "default_multiplier": 0.1,
+        "min_lot": 0.01,
+        "rules": {
+          "MGCZ6": {
+            "multiplier": 0.1
+          },
+          "GCZ6": {
+            "multiplier": 1.0
+          },
+          "MNQZ6": {
+            "multiplier": 0.1
+          },
+          "NQZ6": {
+            "multiplier": 1.0
+          },
+          "MBTZ6": {
+            "multiplier": 0.1
+          }
+        }
+      }
+    },
     "Vantage -> FundedNext": {
       "description": "Vantage Master to FundedNext Slave",
       "symbol_map": {

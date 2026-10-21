@@ -31,8 +31,8 @@
       <div class="badge" id="ftmo-badge" title="Slave Receiver EA (Port 9002)">
         <span class="dot" id="ftmo-dot"></span> <span id="slave-label">Slave</span>: <span id="ftmo-text">Checking...</span>
       </div>
-      <div class="badge" id="lucid-badge" title="Lucid Trading Parallel Futures Copier">
-        <span class="dot" id="lucid-dot"></span> Lucid: <span id="lucid-text">Off</span>
+      <div class="badge" id="lucid-badge" title="Parallel Futures Prop Copier (Lucid / Topstep / Apex)">
+        <span class="dot" id="lucid-dot"></span> Futures: <span id="lucid-text">Off</span>
       </div>
       <button class="btn btn-secondary btn-sm desktop-reload" onclick="forceReloadConfigs()" title="Reload configs from disk">
         🔄 Reload
@@ -108,7 +108,7 @@
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('symbols')">🔀 Symbol Mapping</button>
     <button class="tab-btn" onclick="switchTab('lot-rules')">⚖️ Lot Sizing Rules</button>
-    <button class="tab-btn" onclick="switchTab('lucid')">🚀 Lucid Futures</button>
+    <button class="tab-btn" onclick="switchTab('lucid')">🚀 Futures Copier</button>
     <button class="tab-btn" onclick="switchTab('accounts')">👤 Accounts</button>
     <button class="tab-btn" onclick="switchTab('logs')">📜 Activity & Logs</button>
     <button class="tab-btn" onclick="switchTab('security')">🔒 Security</button>
@@ -248,72 +248,93 @@
     </div>
   </div>
 
-  <!-- TAB: LUCID FUTURES PARALLEL COPIER -->
+  <!-- TAB: MULTI-PROP FUTURES PARALLEL COPIER & UNIVERSAL MASTER -->
   <div id="pane-lucid" class="tab-pane">
     <div class="card">
       <div class="card-header">
         <div>
-          <div class="card-title">🚀 Lucid Trading (Tradovate) Parallel Futures Copier</div>
-          <div class="card-desc">Copies whitelisted symbols (Gold MGC/GC, Nasdaq MNQ/NQ, Bitcoin MBT/BTC) in parallel with FTMO using whole integer contracts.</div>
+          <div class="card-title">🚀 Multi-Prop Futures Parallel Copier (Lucid / Topstep / Apex)</div>
+          <div class="card-desc">Copies whitelisted symbols (Gold MGC/GC, Nasdaq MNQ/NQ, Bitcoin MBT/BTC) in parallel with FTMO to one or more Futures Prop Firms using whole integer contracts.</div>
         </div>
-        <div>
-          <button class="btn btn-primary" onclick="saveLucidConfig()">💾 Save Lucid Settings</button>
-        </div>
-      </div>
-
-      <div class="grid-2" style="margin-bottom: 1.25rem;">
-        <div class="input-group" style="margin-bottom: 0;">
-          <label class="input-label">Parallel Copy to Lucid Trading</label>
-          <select id="lucid-enabled">
-            <option value="false">⏸️ Disabled (FTMO Only)</option>
-            <option value="true">🚀 Enabled (Parallel Copy to FTMO + Lucid)</option>
-          </select>
-        </div>
-        <div class="input-group" style="margin-bottom: 0;">
-          <label class="input-label">Execution Mode</label>
-          <select id="lucid-mode" onchange="toggleLucidModeFields()">
-            <option value="webhook">🔗 Webhook Bridge (PickMyTrade / CrossTrade / Custom)</option>
-            <option value="tradovate">⚡ Tradovate Direct REST API (Bearer Token)</option>
-          </select>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="openFuturesTargetModal()">➕ Add Futures Account</button>
+          <button class="btn btn-primary" onclick="saveLucidConfig()">💾 Save Futures Settings</button>
         </div>
       </div>
 
-      <!-- Webhook Settings -->
-      <div id="lucid-webhook-box" style="background: rgba(15, 23, 42, 0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem;">
-        <div class="grid-2">
+      <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem;">
+        <div class="grid-2" style="align-items: center;">
           <div class="input-group" style="margin-bottom: 0;">
-            <label class="input-label">Webhook Endpoint URL</label>
-            <input type="text" id="lucid-webhook-url" placeholder="https://api.pickmytrade.trade/v2/add-trade-data or custom URL">
-          </div>
-          <div class="input-group" style="margin-bottom: 0;">
-            <label class="input-label">Webhook Secret / Token (Optional)</label>
-            <input type="password" id="lucid-webhook-secret" placeholder="Leave blank to keep existing">
-          </div>
-        </div>
-      </div>
-
-      <!-- Tradovate Direct API Settings -->
-      <div id="lucid-tradovate-box" style="display: none; background: rgba(15, 23, 42, 0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem;">
-        <div class="grid-3">
-          <div class="input-group">
-            <label class="input-label">Tradovate Environment</label>
-            <select id="lucid-tv-env">
-              <option value="demo">Demo / Prop Evaluation (demo.tradovateapi.com)</option>
-              <option value="live">Live (live.tradovateapi.com)</option>
+            <label class="input-label">Master Parallel Futures Switch</label>
+            <select id="lucid-enabled">
+              <option value="false">⏸️ Disabled (Copy to MT5 Slave Only)</option>
+              <option value="true">🚀 Enabled (Parallel Copy to MT5 Slave + Active Futures Accounts)</option>
             </select>
           </div>
-          <div class="input-group">
-            <label class="input-label">Account Spec (Name)</label>
-            <input type="text" id="lucid-tv-spec" placeholder="e.g. LUCID12345">
-          </div>
-          <div class="input-group">
-            <label class="input-label">Account ID (Numeric)</label>
-            <input type="number" id="lucid-tv-acc-id" inputmode="numeric" placeholder="e.g. 987654">
+          <div style="font-size: 0.82rem; color: var(--text-muted); line-height: 1.45;">
+            💡 Supports simultaneous copying to <strong>Lucid Trading</strong>, <strong>Topstep (TopstepX / Tradovate)</strong>, <strong>Apex</strong>, etc. Each account below can be toggled or scaled independently.
           </div>
         </div>
-        <div class="input-group" style="margin-bottom: 0;">
-          <label class="input-label">Tradovate Access Token (Bearer)</label>
-          <input type="password" id="lucid-tv-token" placeholder="Leave blank to keep existing token">
+      </div>
+
+      <!-- Multi-Prop Futures Target Cards -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
+        <div style="font-weight: 700; color: #fff;">🎯 Futures Prop Firm Target Accounts</div>
+        <button class="btn btn-secondary btn-sm" onclick="openFuturesTargetModal()">➕ Add Prop Firm Account</button>
+      </div>
+      <div id="futures-targets-list" style="margin-bottom: 1.5rem;"></div>
+
+      <!-- Universal Master Source: TradingView / Tradovate Master -> FTMO + Futures -->
+      <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+          <div>
+            <div style="font-weight: 700; color: var(--accent);">📡 TradingView / Tradovate Master Signal Input (Optional)</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">
+              Trade from <strong>MT5 (Vantage / Pepperstone)</strong>, <strong>TradingView CFD</strong>, or <strong>TradingView bound to Tradovate Futures</strong> — all automatically copy to FTMO + Futures Slaves!
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="input-group" style="margin-bottom: 0;">
+            <label class="input-label">Tradovate Master Auto-Poller</label>
+            <select id="tv-master-enabled" onchange="toggleTvMasterFields()">
+              <option value="false">⏸️ Off (Use MT5 Master or Webhook)</option>
+              <option value="true">🟢 Poll Tradovate Master Positions</option>
+            </select>
+          </div>
+          <div class="input-group" style="margin-bottom: 0;">
+            <label class="input-label">Master Webhook Endpoint</label>
+            <input type="text" value="POST /api/master-webhook" readonly style="font-family: var(--font-mono); color: var(--accent); opacity: 0.9;">
+          </div>
+          <div class="input-group" style="margin-bottom: 0;">
+            <label class="input-label">Master Webhook Secret (Optional)</label>
+            <input type="password" id="master-webhook-secret" placeholder="Leave blank to use Basic Auth">
+          </div>
+        </div>
+
+        <div id="tv-master-box" style="display: none; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--card-border);">
+          <div class="grid-3">
+            <div class="input-group">
+              <label class="input-label">Master Tradovate Env</label>
+              <select id="tv-master-env">
+                <option value="demo">Demo (demo.tradovateapi.com)</option>
+                <option value="live">Live (live.tradovateapi.com)</option>
+              </select>
+            </div>
+            <div class="input-group">
+              <label class="input-label">Master Account ID (Optional filter)</label>
+              <input type="number" id="tv-master-acc-id" inputmode="numeric" placeholder="0 = Any open position">
+            </div>
+            <div class="input-group">
+              <label class="input-label">Poll Interval (Seconds)</label>
+              <input type="number" id="tv-master-interval" step="0.5" min="0.5" value="1.0">
+            </div>
+          </div>
+          <div class="input-group" style="margin-bottom: 0;">
+            <label class="input-label">Master Tradovate Access Token (Bearer)</label>
+            <input type="password" id="tv-master-token" placeholder="Leave blank to keep existing token">
+          </div>
         </div>
       </div>
 
@@ -321,7 +342,7 @@
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
         <div>
           <div style="font-weight: 700; color: #fff;">🛡️ Strict Whitelist & Integer Contract Rules</div>
-          <div style="font-size: 0.8rem; color: var(--text-muted);">Only symbols listed below will be routed to Lucid. Unlisted symbols (e.g. EURUSD) are automatically ignored.</div>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Only symbols listed below will be routed to Futures Prop Firms. Unlisted symbols (e.g. EURUSD) are automatically ignored.</div>
         </div>
         <button class="btn btn-secondary btn-sm" onclick="openAddLucidModal()">➕ Add Whitelist Symbol</button>
       </div>
@@ -329,10 +350,10 @@
       <table>
         <thead>
           <tr>
-            <th>Vantage Symbol (Whitelist)</th>
-            <th>Lucid Futures Contract</th>
+            <th>Master Symbol (Whitelist)</th>
+            <th>Target Futures Contract</th>
             <th>Sizing Mode</th>
-            <th>Multiplier / Fixed</th>
+            <th>Base Multiplier / Fixed</th>
             <th>Min / Max Contracts (口)</th>
             <th style="text-align: right;">Action</th>
           </tr>
@@ -461,16 +482,101 @@
   </div>
 </div>
 
-<!-- Modal for adding Lucid Whitelist Symbol -->
+<!-- Modal for adding/editing Futures Prop Firm Target Account -->
+<div id="futures-target-modal" style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; align-items: center; justify-content: center; padding: 1rem; overflow-y: auto;">
+  <div class="card" style="width: 480px; max-width: calc(100vw - 2rem); margin: auto;">
+    <div class="card-title" id="futures-target-modal-title" style="margin-bottom: 1rem;">Add Futures Prop Account</div>
+    <input type="hidden" id="ft-modal-id">
+    <div class="grid-2">
+      <div class="input-group">
+        <label class="input-label">Account Display Name</label>
+        <input type="text" id="ft-modal-name" placeholder="e.g. Lucid 50K #1 / Topstep 50K">
+      </div>
+      <div class="input-group">
+        <label class="input-label">Prop Firm</label>
+        <select id="ft-modal-firm">
+          <option value="Lucid Trading">Lucid Trading</option>
+          <option value="Topstep">Topstep (TopstepX / Tradovate)</option>
+          <option value="Apex">Apex Trader Funding</option>
+          <option value="TakeProfitTrader">TakeProfitTrader</option>
+          <option value="Tradeify">Tradeify</option>
+          <option value="Custom Futures">Other / Custom Futures</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid-3">
+      <div class="input-group">
+        <label class="input-label">Status</label>
+        <select id="ft-modal-enabled">
+          <option value="true">🟢 Enabled</option>
+          <option value="false">⏸️ Paused</option>
+        </select>
+      </div>
+      <div class="input-group">
+        <label class="input-label">Contract Scale (×)</label>
+        <input type="number" step="0.1" min="0.1" inputmode="decimal" id="ft-modal-scale" value="1.0" title="Multiplies base whitelisted contracts for this account">
+      </div>
+      <div class="input-group">
+        <label class="input-label">Connection Mode</label>
+        <select id="ft-modal-mode" onchange="toggleFtModalMode()">
+          <option value="webhook">🔗 Webhook Bridge</option>
+          <option value="tradovate">⚡ Tradovate API</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="ft-modal-webhook-box">
+      <div class="input-group">
+        <label class="input-label">Webhook Endpoint URL (PickMyTrade / TradersPost / ProjectX)</label>
+        <input type="text" id="ft-modal-wh-url" placeholder="https://api.pickmytrade.trade/v2/add-trade-data">
+      </div>
+      <div class="input-group" style="margin-bottom: 0;">
+        <label class="input-label">Webhook Secret / Token (Optional)</label>
+        <input type="password" id="ft-modal-wh-secret" placeholder="Leave blank to keep existing">
+      </div>
+    </div>
+
+    <div id="ft-modal-tradovate-box" style="display: none;">
+      <div class="grid-3">
+        <div class="input-group">
+          <label class="input-label">Tradovate Env</label>
+          <select id="ft-modal-tv-env">
+            <option value="demo">Demo / Prop</option>
+            <option value="live">Live</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label class="input-label">Account Spec</label>
+          <input type="text" id="ft-modal-tv-spec" placeholder="e.g. LUCID12345">
+        </div>
+        <div class="input-group">
+          <label class="input-label">Account ID</label>
+          <input type="number" id="ft-modal-tv-acc-id" inputmode="numeric" placeholder="e.g. 987654">
+        </div>
+      </div>
+      <div class="input-group" style="margin-bottom: 0;">
+        <label class="input-label">Tradovate Access Token (Bearer)</label>
+        <input type="password" id="ft-modal-tv-token" placeholder="Leave blank to keep existing token">
+      </div>
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem;">
+      <button class="btn btn-secondary" onclick="closeFuturesTargetModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveFuturesTargetModal()">💾 Save Target</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal for adding Whitelist Symbol -->
 <div id="add-lucid-modal" style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; align-items: center; justify-content: center; padding: 1rem;">
   <div class="card" style="width: 440px; max-width: calc(100vw - 2rem); margin: auto;">
-    <div class="card-title" style="margin-bottom: 1rem;">Add Lucid Whitelist Symbol</div>
+    <div class="card-title" style="margin-bottom: 1rem;">Add Futures Whitelist Symbol</div>
     <div class="input-group">
-      <label class="input-label">Source Symbol on Master (e.g. XAUUSD247, NAS100.r, BTCUSD)</label>
+      <label class="input-label">Source Symbol on Master (e.g. XAUUSD247, XAUUSD.a, NAS100.r, BTCUSD)</label>
       <input type="text" id="lucid-modal-src" placeholder="BTCUSD">
     </div>
     <div class="input-group">
-      <label class="input-label">Target Futures Contract on Lucid (e.g. MGCZ6, MNQZ6, MBTZ6)</label>
+      <label class="input-label">Target Futures Contract (e.g. MGCZ6, MNQZ6, MBTZ6)</label>
       <input type="text" id="lucid-modal-tgt" placeholder="MBTZ6">
     </div>
     <div class="grid-2">
