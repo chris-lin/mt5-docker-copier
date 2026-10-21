@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v3.0] - 2026-10-21
+
+### Added
+- **Lucid Trading (Tradovate / Webhook) Parallel Futures Copier (`profiles/lucid.example.json`)**:
+  - Added a lightweight, non-blocking parallel futures execution layer in `copier_hub.py` (`GET /api/lucid`, `POST /api/lucid`, `calculate_lucid_order()`, and `dispatch_lucid_order()`) supporting both **Webhook Bridge** mode and **Tradovate Direct REST API** mode without requiring a third Docker container.
+  - Implemented strict whitelist symbol filtering (pre-configured for Gold `MGCZ6`, Nasdaq `MNQZ6`, and Micro Bitcoin `MBTZ6`), whole integer contract rounding, and Netting partial/full close tracking (`lucid_open_tickets`).
+  - Added the **`🚀 Lucid Futures` tab** and header status badge to the Web Dashboard.
+- **Zero-Overhead VPS System Load Strip**:
+  - Added `get_vps_metrics()` in `copier_hub.py` with a 5-second in-memory cache reading Linux `/proc/stat`, `/proc/meminfo`, `/proc/uptime`, and `shutil.disk_usage("/")` directly without spawning external subprocesses.
+  - Added a mobile-friendly, 1-line non-sticky collapsible VPS status strip (`CPU`, `RAM`, `Swap`, `Disk`, `Uptime`) to `web/index.html` with Page Visibility API (`document.hidden`) auto-pause when the browser tab is in the background.
+
+### Changed
+- **Modular Web Dashboard Architecture**:
+  - Split the single-file `web/index.html` into dedicated `web/index.html` (HTML structure), `web/style.css` (responsive desktop & mobile stylesheet), and `web/app.js` (frontend application logic), served natively by `copier_hub.py`.
+
+---
+
 ## [v2.0] - 2026-10-19
 
 ### Added
@@ -16,9 +33,6 @@ All notable changes to this project will be documented in this file.
   - Added dual-side account management in `copier_hub.py` (`GET /api/accounts` and `POST /api/accounts` with masked password responses) supporting both **Master Sender** (`mt5_vantage` container / `vantage_data/mt5-server.ini`) and **Slave Receiver** (`mt5_ftmo` container / `ftmo_data/mt5-server.ini`).
   - Switching a Master or Slave account automatically generates the corresponding UTF-16LE `mt5-server.ini`, optionally activates the account's linked profile preset (`linked_profile`), and restarts the target Docker container in a background thread (`docker restart mt5_vantage` or `docker restart mt5_ftmo`).
   - Added the **`👤 Accounts` tab** and modal editor in `web/index.html`, along with live active Master/Slave account name badges in the header.
-- **Zero-Overhead VPS System Load Strip**:
-  - Added `get_vps_metrics()` in `copier_hub.py` with a 5-second in-memory cache reading Linux `/proc/stat`, `/proc/meminfo`, `/proc/uptime`, and `shutil.disk_usage("/")` directly without spawning external subprocesses.
-  - Added a mobile-friendly, 1-line non-sticky collapsible VPS status strip (`CPU`, `RAM`, `Swap`, `Disk`, `Uptime`) to `web/index.html` with Page Visibility API (`document.hidden`) auto-pause when the browser tab is in the background.
 
 ---
 

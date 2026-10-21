@@ -16,7 +16,7 @@
 <header>
   <div class="header-content">
     <div class="brand">
-      <h1>⚡ MT5 Copier Hub <span style="font-size: 0.75rem; background: rgba(56, 189, 248, 0.15); color: var(--accent); padding: 0.15rem 0.45rem; border-radius: 6px; vertical-align: middle;">v2.0</span></h1>
+      <h1>⚡ MT5 Copier Hub <span style="font-size: 0.75rem; background: rgba(56, 189, 248, 0.15); color: var(--accent); padding: 0.15rem 0.45rem; border-radius: 6px; vertical-align: middle;">v3.0</span></h1>
       <button class="btn btn-secondary btn-sm mobile-reload" onclick="forceReloadConfigs()" title="Reload configs from disk">
         🔄 Reload
       </button>
@@ -30,6 +30,9 @@
       </div>
       <div class="badge" id="ftmo-badge" title="Slave Receiver EA (Port 9002)">
         <span class="dot" id="ftmo-dot"></span> <span id="slave-label">Slave</span>: <span id="ftmo-text">Checking...</span>
+      </div>
+      <div class="badge" id="lucid-badge" title="Lucid Trading Parallel Futures Copier">
+        <span class="dot" id="lucid-dot"></span> Lucid: <span id="lucid-text">Off</span>
       </div>
       <button class="btn btn-secondary btn-sm desktop-reload" onclick="forceReloadConfigs()" title="Reload configs from disk">
         🔄 Reload
@@ -105,6 +108,7 @@
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('symbols')">🔀 Symbol Mapping</button>
     <button class="tab-btn" onclick="switchTab('lot-rules')">⚖️ Lot Sizing Rules</button>
+    <button class="tab-btn" onclick="switchTab('lucid')">🚀 Lucid Futures</button>
     <button class="tab-btn" onclick="switchTab('accounts')">👤 Accounts</button>
     <button class="tab-btn" onclick="switchTab('logs')">📜 Activity & Logs</button>
     <button class="tab-btn" onclick="switchTab('security')">🔒 Security</button>
@@ -244,6 +248,100 @@
     </div>
   </div>
 
+  <!-- TAB: LUCID FUTURES PARALLEL COPIER -->
+  <div id="pane-lucid" class="tab-pane">
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">🚀 Lucid Trading (Tradovate) Parallel Futures Copier</div>
+          <div class="card-desc">Copies whitelisted symbols (Gold MGC/GC, Nasdaq MNQ/NQ, Bitcoin MBT/BTC) in parallel with FTMO using whole integer contracts.</div>
+        </div>
+        <div>
+          <button class="btn btn-primary" onclick="saveLucidConfig()">💾 Save Lucid Settings</button>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-bottom: 1.25rem;">
+        <div class="input-group" style="margin-bottom: 0;">
+          <label class="input-label">Parallel Copy to Lucid Trading</label>
+          <select id="lucid-enabled">
+            <option value="false">⏸️ Disabled (FTMO Only)</option>
+            <option value="true">🚀 Enabled (Parallel Copy to FTMO + Lucid)</option>
+          </select>
+        </div>
+        <div class="input-group" style="margin-bottom: 0;">
+          <label class="input-label">Execution Mode</label>
+          <select id="lucid-mode" onchange="toggleLucidModeFields()">
+            <option value="webhook">🔗 Webhook Bridge (PickMyTrade / CrossTrade / Custom)</option>
+            <option value="tradovate">⚡ Tradovate Direct REST API (Bearer Token)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Webhook Settings -->
+      <div id="lucid-webhook-box" style="background: rgba(15, 23, 42, 0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem;">
+        <div class="grid-2">
+          <div class="input-group" style="margin-bottom: 0;">
+            <label class="input-label">Webhook Endpoint URL</label>
+            <input type="text" id="lucid-webhook-url" placeholder="https://api.pickmytrade.trade/v2/add-trade-data or custom URL">
+          </div>
+          <div class="input-group" style="margin-bottom: 0;">
+            <label class="input-label">Webhook Secret / Token (Optional)</label>
+            <input type="password" id="lucid-webhook-secret" placeholder="Leave blank to keep existing">
+          </div>
+        </div>
+      </div>
+
+      <!-- Tradovate Direct API Settings -->
+      <div id="lucid-tradovate-box" style="display: none; background: rgba(15, 23, 42, 0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem;">
+        <div class="grid-3">
+          <div class="input-group">
+            <label class="input-label">Tradovate Environment</label>
+            <select id="lucid-tv-env">
+              <option value="demo">Demo / Prop Evaluation (demo.tradovateapi.com)</option>
+              <option value="live">Live (live.tradovateapi.com)</option>
+            </select>
+          </div>
+          <div class="input-group">
+            <label class="input-label">Account Spec (Name)</label>
+            <input type="text" id="lucid-tv-spec" placeholder="e.g. LUCID12345">
+          </div>
+          <div class="input-group">
+            <label class="input-label">Account ID (Numeric)</label>
+            <input type="number" id="lucid-tv-acc-id" inputmode="numeric" placeholder="e.g. 987654">
+          </div>
+        </div>
+        <div class="input-group" style="margin-bottom: 0;">
+          <label class="input-label">Tradovate Access Token (Bearer)</label>
+          <input type="password" id="lucid-tv-token" placeholder="Leave blank to keep existing token">
+        </div>
+      </div>
+
+      <!-- Whitelist Rules Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
+        <div>
+          <div style="font-weight: 700; color: #fff;">🛡️ Strict Whitelist & Integer Contract Rules</div>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Only symbols listed below will be routed to Lucid. Unlisted symbols (e.g. EURUSD) are automatically ignored.</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="openAddLucidModal()">➕ Add Whitelist Symbol</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Vantage Symbol (Whitelist)</th>
+            <th>Lucid Futures Contract</th>
+            <th>Sizing Mode</th>
+            <th>Multiplier / Fixed</th>
+            <th>Min / Max Contracts (口)</th>
+            <th style="text-align: right;">Action</th>
+          </tr>
+        </thead>
+        <tbody id="lucid-rules-body"></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- TAB 4: LOGS & ACTIVITY -->
   <div id="pane-logs" class="tab-pane">
     <div class="card">
@@ -359,6 +457,38 @@
     <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem;">
       <button class="btn btn-secondary" onclick="closeAccountModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveAccountModal()">💾 Save Account</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal for adding Lucid Whitelist Symbol -->
+<div id="add-lucid-modal" style="display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; align-items: center; justify-content: center; padding: 1rem;">
+  <div class="card" style="width: 440px; max-width: calc(100vw - 2rem); margin: auto;">
+    <div class="card-title" style="margin-bottom: 1rem;">Add Lucid Whitelist Symbol</div>
+    <div class="input-group">
+      <label class="input-label">Source Symbol on Master (e.g. XAUUSD247, NAS100.r, BTCUSD)</label>
+      <input type="text" id="lucid-modal-src" placeholder="BTCUSD">
+    </div>
+    <div class="input-group">
+      <label class="input-label">Target Futures Contract on Lucid (e.g. MGCZ6, MNQZ6, MBTZ6)</label>
+      <input type="text" id="lucid-modal-tgt" placeholder="MBTZ6">
+    </div>
+    <div class="grid-2">
+      <div class="input-group">
+        <label class="input-label">Sizing Mode</label>
+        <select id="lucid-modal-mode">
+          <option value="multiplier">Multiplier (× Lot)</option>
+          <option value="fixed">Fixed Contracts (口)</option>
+        </select>
+      </div>
+      <div class="input-group">
+        <label class="input-label">Multiplier or Fixed Value</label>
+        <input type="number" step="0.01" inputmode="decimal" id="lucid-modal-val" value="10">
+      </div>
+    </div>
+    <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem;">
+      <button class="btn btn-secondary" onclick="closeAddLucidModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmAddLucidRule()">Add Rule</button>
     </div>
   </div>
 </div>

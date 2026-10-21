@@ -140,6 +140,20 @@ let symbolsData = {};
         fBadge.title = 'Slave EA: Offline';
       }
 
+      // Lucid Badge
+      const lDot = document.getElementById('lucid-dot');
+      const lText = document.getElementById('lucid-text');
+      if (lDot && lText && data.lucid) {
+        if (data.lucid.enabled) {
+          lDot.className = 'dot online';
+          const modeLbl = data.lucid.mode === 'tradovate' ? 'API' : 'Webhook';
+          lText.innerText = `On (${modeLbl})`;
+        } else {
+          lDot.className = 'dot';
+          lText.innerText = 'Off';
+        }
+      }
+
       // Render Logs
       const logBox = document.getElementById('log-box');
       if (data.recent_logs && data.recent_logs.length > 0) {
@@ -799,12 +813,186 @@ let symbolsData = {};
     return String(str).replace(/['"\\]/g, '\\$&');
   }
 
+  // === LUCID FUTURES PARALLEL COPIER ===
+  let lucidData = { enabled: false, mode: 'webhook', whitelist_rules: {}, tradovate: {} };
+
+  async function loadLucid() {
+    try {
+      lucidData = await fetchJSON('/api/lucid');
+      renderLucid();
+    } catch (e) {
+      console.error("Failed to load Lucid config:", e);
+    }
+  }
+
+  function toggleLucidModeFields() {
+    const mode = document.getElementById('lucid-mode').value;
+    document.getElementById('lucid-webhook-box').style.display = mode === 'webhook' ? 'block' : 'none';
+    document.getElementById('lucid-tradovate-box').style.display = mode === 'tradovate' ? 'block' : 'none';
+  }
+
+  function renderLucid() {
+    document.getElementById('lucid-enabled').value = lucidData.enabled ? 'true' : 'false';
+    document.getElementById('lucid-mode').value = lucidData.mode || 'webhook';
+    document.getElementById('lucid-webhook-url').value = lucidData.webhook_url || '';
+    document.getElementById('lucid-webhook-secret').value = lucidData.webhook_secret || '';
+
+    const tv = lucidData.tradovate || {};
+    document.getElementById('lucid-tv-env').value = tv.env || 'demo';
+    document.getElementById('lucid-tv-spec').value = tv.account_spec || '';
+    document.getElementById('lucid-tv-acc-id').value = tv.account_id || '';
+    document.getElementById('lucid-tv-token').value = tv.access_token || '';
+
+    toggleLucidModeFields();
+    renderLucidRulesTable();
+  }
+
+  function renderLucidRulesTable() {
+    const tbody = document.getElementById('lucid-rules-body');
+    if (!tbody) return;
+    const rules = lucidData.whitelist_rules || {};
+    const keys = Object.keys(rules).sort();
+
+    if (keys.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">No whitelisted symbols configured.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = keys.map(src => {
+      const r = rules[src] || {};
+      const sMode = r.sizing_mode || 'multiplier';
+      const val = sMode === 'fixed' ? (r.fixed_contracts ?? 1) : (r.multiplier ?? 10);
+      return `
+        <tr>
+          <td>
+            <div class="mobile-card-top">
+              <div>
+                <div class="mobile-only-label">Vantage Symbol (Whitelist)</div>
+                <span class="symbol-pill">${escapeHtml(src)}</span>
+              </div>
+              <button class="btn btn-danger btn-sm mobile-only-delete" onclick="deleteLucidRule('${escapeJs(src)}')">🗑️</button>
+            </div>
+          </td>
+          <td>
+            <div class="mobile-only-label">Lucid Futures Contract</div>
+            <input type="text" value="${escapeHtml(r.target_symbol || '')}" onchange="updateLucidRule('${escapeJs(src)}', 'target_symbol', this.value)" style="width: 120px; font-family: var(--font-mono);">
+          </td>
+          <td>
+            <div class="mobile-only-label">Sizing Mode</div>
+            <select onchange="updateLucidRule('${escapeJs(src)}', 'sizing_mode', this.value)">
+              <option value="multiplier" ${sMode === 'multiplier' ? 'selected' : ''}>Multiplier (× Lot)</option>
+              <option value="fixed" ${sMode === 'fixed' ? 'selected' : ''}>Fixed Contracts (口)</option>
+            </select>
+          </td>
+          <td>
+            <div class="mobile-only-label">${sMode === 'fixed' ? 'Fixed Contracts (口)' : 'Multiplier'}</div>
+            <input type="number" step="0.01" inputmode="decimal" value="${val}" onchange="updateLucidRule('${escapeJs(src)}', '${sMode === 'fixed' ? 'fixed_contracts' : 'multiplier'}', this.value)" style="width: 110px;">
+          </td>
+          <td>
+            <div class="mobile-only-label">Min / Max Contracts (口)</div>
+            <div style="display: flex; align-items: center; gap: 0.35rem;">
+              <input type="number" step="1" min="1" inputmode="numeric" value="${r.min_contracts ?? 1}" onchange="updateLucidRule('${escapeJs(src)}', 'min_contracts', this.value)" style="width: 68px;" title="Min contracts">
+              <span style="color: var(--text-muted);">~</span>
+              <input type="number" step="1" min="1" inputmode="numeric" value="${r.max_contracts ?? 20}" onchange="updateLucidRule('${escapeJs(src)}', 'max_contracts', this.value)" style="width: 68px;" title="Max contracts">
+            </div>
+          </td>
+          <td class="desktop-only-delete" style="text-align: right;">
+            <button class="btn btn-danger btn-sm" onclick="deleteLucidRule('${escapeJs(src)}')">🗑️</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function updateLucidRule(src, field, value) {
+    if (!lucidData.whitelist_rules || !lucidData.whitelist_rules[src]) return;
+    const r = lucidData.whitelist_rules[src];
+    if (field === 'target_symbol' || field === 'sizing_mode') {
+      r[field] = String(value).trim();
+      if (field === 'sizing_mode') renderLucidRulesTable();
+    } else if (field === 'multiplier') {
+      r.multiplier = parseFloat(value) || 1.0;
+    } else {
+      r[field] = Math.max(1, parseInt(value, 10) || 1);
+    }
+  }
+
+  function deleteLucidRule(src) {
+    if (!lucidData.whitelist_rules) return;
+    delete lucidData.whitelist_rules[src];
+    renderLucidRulesTable();
+  }
+
+  function openAddLucidModal() {
+    document.getElementById('lucid-modal-src').value = '';
+    document.getElementById('lucid-modal-tgt').value = '';
+    document.getElementById('lucid-modal-mode').value = 'multiplier';
+    document.getElementById('lucid-modal-val').value = '10';
+    document.getElementById('add-lucid-modal').style.display = 'flex';
+  }
+
+  function closeAddLucidModal() {
+    document.getElementById('add-lucid-modal').style.display = 'none';
+  }
+
+  function confirmAddLucidRule() {
+    const src = document.getElementById('lucid-modal-src').value.trim();
+    const tgt = document.getElementById('lucid-modal-tgt').value.trim();
+    const mode = document.getElementById('lucid-modal-mode').value;
+    const val = parseFloat(document.getElementById('lucid-modal-val').value) || 1;
+    if (!src || !tgt) {
+      showToast('Both Source Symbol and Target Futures Contract are required', 'error');
+      return;
+    }
+    if (!lucidData.whitelist_rules) lucidData.whitelist_rules = {};
+    lucidData.whitelist_rules[src] = {
+      target_symbol: tgt,
+      sizing_mode: mode,
+      multiplier: mode === 'multiplier' ? val : 10.0,
+      fixed_contracts: mode === 'fixed' ? Math.max(1, Math.round(val)) : 1,
+      min_contracts: 1,
+      max_contracts: 20
+    };
+    closeAddLucidModal();
+    renderLucidRulesTable();
+  }
+
+  async function saveLucidConfig() {
+    const payload = {
+      enabled: document.getElementById('lucid-enabled').value === 'true',
+      mode: document.getElementById('lucid-mode').value,
+      webhook_url: document.getElementById('lucid-webhook-url').value.trim(),
+      webhook_secret: document.getElementById('lucid-webhook-secret').value,
+      tradovate: {
+        env: document.getElementById('lucid-tv-env').value,
+        account_spec: document.getElementById('lucid-tv-spec').value.trim(),
+        account_id: parseInt(document.getElementById('lucid-tv-acc-id').value, 10) || 0,
+        access_token: document.getElementById('lucid-tv-token').value
+      },
+      whitelist_rules: lucidData.whitelist_rules || {}
+    };
+    try {
+      const res = await fetchJSON('/api/lucid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      lucidData = res.lucid || lucidData;
+      renderLucid();
+      await refreshStatus();
+      showToast('Saved Lucid Trading settings!');
+    } catch (e) {
+      // handled
+    }
+  }
+
   // === INITIALIZE ===
   window.addEventListener('DOMContentLoaded', () => {
     loadProfiles();
     loadAccounts();
     loadSymbols();
     loadLotRules();
+    loadLucid();
     refreshStatus();
     setInterval(() => {
       if (!document.hidden) {

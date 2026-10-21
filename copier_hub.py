@@ -10,8 +10,10 @@ import subprocess
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
+import urllib.request
+import urllib.error
 
-VERSION = "2.0"
+VERSION = "3.0"
 
 HOST = "0.0.0.0"
 VANTAGE_PORT = 9001
@@ -22,24 +24,57 @@ WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 
 # Base directories and file paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SYMBOL_MAP_FILE = os.path.join(BASE_DIR, "symbol_map.json")
-LOT_RULES_FILE = os.path.join(BASE_DIR, "lot_rules.json")
-AUTH_FILE = os.path.join(BASE_DIR, "web_auth.json")
+CONFIG_DIR = os.path.join(BASE_DIR, ".config")
+PROFILES_DIR = CONFIG_DIR  # Backward-compatible alias
+TEMPLATE_DIR = os.path.join(BASE_DIR, "config_templates")
+
+SYMBOL_MAP_FILE = os.path.join(CONFIG_DIR, "symbol_map.json")
+SYMBOL_MAP_EXAMPLE_FILE = os.path.join(TEMPLATE_DIR, "symbol_map.example.json")
+LOT_RULES_FILE = os.path.join(CONFIG_DIR, "lot_rules.json")
+LOT_RULES_EXAMPLE_FILE = os.path.join(TEMPLATE_DIR, "lot_rules.example.json")
+AUTH_FILE = os.path.join(CONFIG_DIR, "web_auth.json")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 WEB_STATIC_DIR = os.path.join(BASE_DIR, "web")
-PROFILES_DIR = os.path.join(BASE_DIR, "profiles")
-PRESETS_FILE = os.path.join(PROFILES_DIR, "presets.json")
-PRESETS_EXAMPLE_FILE = os.path.join(PROFILES_DIR, "presets.example.json")
-ACCOUNTS_FILE = os.path.join(PROFILES_DIR, "accounts.json")
+PRESETS_FILE = os.path.join(CONFIG_DIR, "presets.json")
+PRESETS_EXAMPLE_FILE = os.path.join(TEMPLATE_DIR, "presets.example.json")
+ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "accounts.json")
+ACCOUNTS_EXAMPLE_FILE = os.path.join(TEMPLATE_DIR, "accounts.example.json")
+LUCID_FILE = os.path.join(CONFIG_DIR, "lucid.json")
+LUCID_EXAMPLE_FILE = os.path.join(TEMPLATE_DIR, "lucid.example.json")
 
 MASTER_INI_FILE = os.path.join(BASE_DIR, os.getenv("MASTER_INI_PATH", "vantage_data/mt5-server.ini"))
 SLAVE_INI_FILE = os.path.join(BASE_DIR, os.getenv("SLAVE_INI_PATH", "ftmo_data/mt5-server.ini"))
 MASTER_CONTAINER = os.getenv("MASTER_CONTAINER", "mt5_vantage")
 SLAVE_CONTAINER = os.getenv("SLAVE_CONTAINER", "mt5_ftmo")
 
+os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
 os.makedirs(WEB_STATIC_DIR, exist_ok=True)
-os.makedirs(PROFILES_DIR, exist_ok=True)
+
+def _migrate_or_seed_config(target_path: str, legacy_paths: list, example_path: str = None):
+    """Migrate existing legacy config file into .config/ or seed from config_templates/ if missing."""
+    os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+    if os.path.exists(target_path):
+        return
+    for leg in legacy_paths:
+        if leg and os.path.exists(leg):
+            try:
+                shutil.copy2(leg, target_path)
+                return
+            except Exception:
+                pass
+    if example_path and os.path.exists(example_path):
+        try:
+            shutil.copy2(example_path, target_path)
+        except Exception:
+            pass
+
+_migrate_or_seed_config(SYMBOL_MAP_FILE, [os.path.join(BASE_DIR, "symbol_map.json")], SYMBOL_MAP_EXAMPLE_FILE)
+_migrate_or_seed_config(LOT_RULES_FILE, [os.path.join(BASE_DIR, "lot_rules.json")], LOT_RULES_EXAMPLE_FILE)
+_migrate_or_seed_config(AUTH_FILE, [os.path.join(BASE_DIR, "web_auth.json")])
+_migrate_or_seed_config(PRESETS_FILE, [os.path.join(BASE_DIR, "profiles", "presets.json")], PRESETS_EXAMPLE_FILE)
+_migrate_or_seed_config(ACCOUNTS_FILE, [os.path.join(BASE_DIR, "profiles", "accounts.json")])
+_migrate_or_seed_config(LUCID_FILE, [os.path.join(BASE_DIR, "profiles", "lucid.json")], LUCID_EXAMPLE_FILE)
 
 # Shared memory configurations
 config_lock = threading.Lock()
@@ -256,10 +291,166 @@ def send_to_ftmo(cmd: str):
         else:
             log_event("WARN", "FTMO receiver not connected, command dropped!")
 
+# Lucid Trading (Tradovate / Webhook) Parallel Futures Executor
+lucid_lock = threading.Lock()
+lucid_open_tickets = {}  # {ticket: {"src_symbol": str, "target_symbol": str, "action": "Buy"|"Sell", "contracts": int}}
+lucid_dispatched_orders = deque(maxlen=50)
+
+def get_default_lucid_config() -> dict:
+    return {
+        "enabled": False,
+        "mode": "webhook",
+        "webhook_url": "",
+        "webhook_secret": "",
+        "tradovate": {
+            "env": "demo",
+            "username": "",
+            "password": "",
+            "account_spec": "",
+            "account_id": 0,
+            "access_token": "",
+            "cid": 0,
+            "sec": ""
+        },
+        "whitelist_rules": {
+            "XAUUSD247": {"target_symbol": "MGCZ6", "sizing_mode": "multiplier", "multiplier": 2.5, "fixed_contracts": 1, "min_contracts": 1, "max_contracts": 20},
+            "XAUUSD.tv": {"target_symbol": "MGCZ6", "sizing_mode": "multiplier", "multiplier": 250.0, "fixed_contracts": 1, "min_contracts": 1, "max_contracts": 20},
+            "XAUUSD": {"target_symbol": "MGCZ6", "sizing_mode": "fixed", "multiplier": 10.0, "fixed_contracts": 2, "min_contracts": 1, "max_contracts": 20},
+            "NAS100.r": {"target_symbol": "MNQZ6", "sizing_mode": "multiplier", "multiplier": 10.0, "fixed_contracts": 1, "min_contracts": 1, "max_contracts": 20},
+            "NAS100": {"target_symbol": "MNQZ6", "sizing_mode": "multiplier", "multiplier": 10.0, "fixed_contracts": 1, "min_contracts": 1, "max_contracts": 20},
+            "BTCUSD": {"target_symbol": "MBTZ6", "sizing_mode": "multiplier", "multiplier": 10.0, "fixed_contracts": 1, "min_contracts": 1, "max_contracts": 10}
+        }
+    }
+
+def load_lucid_data() -> dict:
+    """Load Lucid Trading futures configuration from profiles/lucid.json or seed from lucid.example.json."""
+    os.makedirs(PROFILES_DIR, exist_ok=True)
+    if os.path.exists(LUCID_FILE):
+        try:
+            with open(LUCID_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "whitelist_rules" in data:
+                    return data
+        except Exception as e:
+            log_event("ERROR", f"Failed to load {LUCID_FILE}: {e}")
+    if os.path.exists(LUCID_EXAMPLE_FILE):
+        try:
+            with open(LUCID_EXAMPLE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "whitelist_rules" in data:
+                    save_atomic_json(LUCID_FILE, data, "lucid")
+                    return data
+        except Exception as e:
+            log_event("ERROR", f"Failed to load {LUCID_EXAMPLE_FILE}: {e}")
+    default_cfg = get_default_lucid_config()
+    save_atomic_json(LUCID_FILE, default_cfg, "lucid")
+    return default_cfg
+
+def mask_lucid_data(data: dict) -> dict:
+    """Mask sensitive secrets/passwords in Lucid config before returning to Web UI."""
+    masked = json.loads(json.dumps(data))
+    if masked.get("webhook_secret"):
+        masked["webhook_secret"] = "••••••••"
+    tv = masked.get("tradovate", {})
+    if isinstance(tv, dict):
+        if tv.get("password"):
+            tv["password"] = "••••••••"
+        if tv.get("access_token"):
+            tv["access_token"] = "••••••••"
+        if tv.get("sec"):
+            tv["sec"] = "••••••••"
+    with lucid_lock:
+        masked["open_tickets"] = dict(lucid_open_tickets)
+    return masked
+
+def calculate_lucid_order(src_symbol: str, src_lot: float, lucid_cfg: dict = None):
+    """Evaluate strict whitelist for Lucid Trading and return (target_symbol, integer_contracts) or None."""
+    if lucid_cfg is None:
+        lucid_cfg = load_lucid_data()
+    rules = lucid_cfg.get("whitelist_rules", {})
+    rule = rules.get(src_symbol)
+    if not rule:
+        return None
+    target_symbol = (rule.get("target_symbol") or "").strip()
+    if not target_symbol:
+        return None
+
+    sizing_mode = rule.get("sizing_mode", "multiplier")
+    if sizing_mode == "fixed":
+        raw_qty = float(rule.get("fixed_contracts", 1))
+    else:
+        raw_qty = float(src_lot) * float(rule.get("multiplier", 1.0))
+
+    min_c = max(1, int(rule.get("min_contracts", 1)))
+    max_c = max(min_c, int(rule.get("max_contracts", 50)))
+    contracts = max(min_c, min(max_c, int(round(raw_qty))))
+    return target_symbol, contracts
+
+def _execute_lucid_http(order_payload: dict, lucid_cfg: dict):
+    """Send order payload to Webhook Bridge or Tradovate Direct REST API."""
+    mode = lucid_cfg.get("mode", "webhook")
+    try:
+        if mode == "webhook":
+            url = (lucid_cfg.get("webhook_url") or "").strip()
+            if not url:
+                log_event("LUCID", f"Simulated {order_payload['event']}: {order_payload['action']} {order_payload['quantity']} {order_payload['symbol']} (No webhook_url configured)")
+                return
+            body = dict(order_payload)
+            if lucid_cfg.get("webhook_secret"):
+                body["secret"] = lucid_cfg["webhook_secret"]
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json", "User-Agent": "MT5-Copier-Hub/2.0"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                log_event("TO LUCID", f"Webhook {order_payload['event']} -> {order_payload['action']} {order_payload['quantity']} {order_payload['symbol']} (HTTP {resp.status})")
+        else:
+            tv = lucid_cfg.get("tradovate", {})
+            env = tv.get("env", "demo")
+            base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
+            token = (tv.get("access_token") or "").strip()
+            if not token:
+                log_event("LUCID", f"Simulated Tradovate {order_payload['event']}: {order_payload['action']} {order_payload['quantity']} {order_payload['symbol']} (No access_token configured)")
+                return
+            tv_body = {
+                "accountSpec": tv.get("account_spec", ""),
+                "accountId": int(tv.get("account_id") or 0),
+                "action": order_payload["action"],
+                "symbol": order_payload["symbol"],
+                "orderQty": int(order_payload["quantity"]),
+                "orderType": "Market",
+                "isAutomated": True
+            }
+            req = urllib.request.Request(
+                f"{base_url}/order/placeorder",
+                data=json.dumps(tv_body).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                },
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                log_event("TO LUCID", f"Tradovate {order_payload['event']} -> {order_payload['action']} {order_payload['quantity']} {order_payload['symbol']} (HTTP {resp.status})")
+    except Exception as e:
+        log_event("ERROR", f"Lucid order failed ({order_payload['action']} {order_payload['quantity']} {order_payload['symbol']}): {e}")
+
+def dispatch_lucid_order(order_payload: dict, lucid_cfg: dict):
+    """Record order in history and fire non-blocking HTTP request in background thread."""
+    with lucid_lock:
+        lucid_dispatched_orders.append(order_payload)
+    t = threading.Thread(target=_execute_lucid_http, args=(order_payload, lucid_cfg), daemon=True)
+    t.start()
+
 def process_position_snapshot(last_positions: dict, positions: list):
-    """Compare previous and current Vantage position snapshots, dispatch commands to FTMO, and return (current_positions, commands_sent)."""
+    """Compare previous and current Vantage position snapshots, dispatch commands to FTMO and Lucid Trading, and return (current_positions, commands_sent)."""
     current_positions = {p["ticket"]: p for p in positions}
     commands_sent = []
+    lucid_cfg = load_lucid_data()
+    lucid_enabled = bool(lucid_cfg.get("enabled", False))
 
     # 1. Detect open positions & partial closes
     for ticket, pos in current_positions.items():
@@ -271,6 +462,28 @@ def process_position_snapshot(last_positions: dict, positions: list):
             log_event("TRADE", f"Open detected: {pos['symbol']} -> {target_symbol} vol={vol} (ticket #{ticket})")
             send_to_ftmo(cmd)
             commands_sent.append(cmd)
+
+            # Parallel Lucid Trading Whitelist Routing
+            if lucid_enabled:
+                lucid_res = calculate_lucid_order(pos["symbol"], pos["volume"], lucid_cfg)
+                if lucid_res:
+                    lucid_sym, contracts = lucid_res
+                    entry_action = "Buy" if int(pos["type"]) == 0 else "Sell"
+                    with lucid_lock:
+                        lucid_open_tickets[ticket] = {
+                            "src_symbol": pos["symbol"],
+                            "target_symbol": lucid_sym,
+                            "action": entry_action,
+                            "contracts": contracts
+                        }
+                    dispatch_lucid_order({
+                        "event": "OPEN",
+                        "ticket": ticket,
+                        "src_symbol": pos["symbol"],
+                        "symbol": lucid_sym,
+                        "action": entry_action,
+                        "quantity": contracts
+                    }, lucid_cfg)
         else:
             old_vol = float(last_positions[ticket]["volume"])
             new_vol = float(pos["volume"])
@@ -286,6 +499,28 @@ def process_position_snapshot(last_positions: dict, positions: list):
                 send_to_ftmo(cmd)
                 commands_sent.append(cmd)
 
+                # Parallel Lucid Trading Partial Close (Integer Contracts)
+                if lucid_enabled:
+                    order_to_send = None
+                    with lucid_lock:
+                        if ticket in lucid_open_tickets:
+                            state = lucid_open_tickets[ticket]
+                            cur_c = int(state["contracts"])
+                            close_qty = int(round(cur_c * ratio))
+                            if cur_c > 1 and 1 <= close_qty < cur_c:
+                                close_action = "Sell" if state["action"] == "Buy" else "Buy"
+                                state["contracts"] = cur_c - close_qty
+                                order_to_send = {
+                                    "event": "PARTIAL",
+                                    "ticket": ticket,
+                                    "src_symbol": state["src_symbol"],
+                                    "symbol": state["target_symbol"],
+                                    "action": close_action,
+                                    "quantity": close_qty
+                                }
+                    if order_to_send:
+                        dispatch_lucid_order(order_to_send, lucid_cfg)
+
     # 2. Detect closed positions
     for ticket, pos in last_positions.items():
         if ticket not in current_positions:
@@ -294,6 +529,25 @@ def process_position_snapshot(last_positions: dict, positions: list):
             log_event("TRADE", f"Close detected: {pos['symbol']} -> {target_symbol} (ticket #{ticket})")
             send_to_ftmo(cmd)
             commands_sent.append(cmd)
+
+            # Parallel Lucid Trading Full Exit (Remaining Integer Contracts)
+            order_to_send = None
+            with lucid_lock:
+                if ticket in lucid_open_tickets:
+                    state = lucid_open_tickets.pop(ticket)
+                    rem_c = int(state["contracts"])
+                    if rem_c >= 1 and lucid_enabled:
+                        close_action = "Sell" if state["action"] == "Buy" else "Buy"
+                        order_to_send = {
+                            "event": "CLOSE",
+                            "ticket": ticket,
+                            "src_symbol": state["src_symbol"],
+                            "symbol": state["target_symbol"],
+                            "action": close_action,
+                            "quantity": rem_c
+                        }
+            if order_to_send:
+                dispatch_lucid_order(order_to_send, lucid_cfg)
 
     return current_positions, commands_sent
 
@@ -884,6 +1138,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 None
             )
 
+            lucid_info = load_lucid_data()
+            with lucid_lock:
+                lucid_open_count = len(lucid_open_tickets)
+
             data = {
                 "version": VERSION,
                 "hub_running": True,
@@ -892,6 +1150,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "active_slave_name": active_slave_name,
                 "vantage": v_copy,
                 "ftmo": f_copy,
+                "lucid": {
+                    "enabled": bool(lucid_info.get("enabled", False)),
+                    "mode": lucid_info.get("mode", "webhook"),
+                    "whitelist_count": len(lucid_info.get("whitelist_rules", {})),
+                    "open_positions": lucid_open_count
+                },
                 "vps": get_vps_metrics(),
                 "loaded_at": last_config_load_time,
                 "recent_logs": logs_copy
@@ -917,6 +1181,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/accounts":
             self.send_json(200, mask_accounts_data(load_accounts_data()))
+            return
+
+        if path == "/api/lucid":
+            self.send_json(200, mask_lucid_data(load_lucid_data()))
             return
 
         self.send_response(404)
@@ -1106,6 +1374,79 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 return
 
             self.send_json(400, {"success": False, "error": f"Unknown account action: {action}"})
+            return
+
+        if path == "/api/lucid":
+            cur_lucid = load_lucid_data()
+            cur_tv = cur_lucid.get("tradovate", {})
+
+            enabled = bool(req_data.get("enabled", cur_lucid.get("enabled", False)))
+            mode = req_data.get("mode", cur_lucid.get("mode", "webhook"))
+            if mode not in ("webhook", "tradovate"):
+                self.send_json(400, {"success": False, "error": "Mode must be 'webhook' or 'tradovate'"})
+                return
+
+            webhook_url = (req_data.get("webhook_url") if "webhook_url" in req_data else cur_lucid.get("webhook_url", "")).strip()
+            raw_wh_secret = req_data.get("webhook_secret", "••••••••")
+            webhook_secret = cur_lucid.get("webhook_secret", "") if raw_wh_secret == "••••••••" else raw_wh_secret
+
+            req_tv = req_data.get("tradovate", {})
+            tv_pwd = req_tv.get("password", "••••••••")
+            tv_token = req_tv.get("access_token", "••••••••")
+            tv_sec = req_tv.get("sec", "••••••••")
+
+            new_tv = {
+                "env": req_tv.get("env", cur_tv.get("env", "demo")),
+                "username": (req_tv.get("username") if "username" in req_tv else cur_tv.get("username", "")).strip(),
+                "password": cur_tv.get("password", "") if tv_pwd == "••••••••" else tv_pwd,
+                "account_spec": (req_tv.get("account_spec") if "account_spec" in req_tv else cur_tv.get("account_spec", "")).strip(),
+                "account_id": int(req_tv.get("account_id") if "account_id" in req_tv else cur_tv.get("account_id", 0) or 0),
+                "access_token": cur_tv.get("access_token", "") if tv_token == "••••••••" else tv_token,
+                "cid": int(req_tv.get("cid") if "cid" in req_tv else cur_tv.get("cid", 0) or 0),
+                "sec": cur_tv.get("sec", "") if tv_sec == "••••••••" else tv_sec
+            }
+
+            raw_rules = req_data.get("whitelist_rules", cur_lucid.get("whitelist_rules", {}))
+            if not isinstance(raw_rules, dict):
+                self.send_json(400, {"success": False, "error": "whitelist_rules must be a JSON object"})
+                return
+
+            cleaned_rules = {}
+            for src_sym, r in raw_rules.items():
+                src_key = str(src_sym).strip()
+                if not src_key or not isinstance(r, dict):
+                    continue
+                tgt_sym = str(r.get("target_symbol", "")).strip()
+                if not tgt_sym:
+                    self.send_json(400, {"success": False, "error": f"Target futures contract is required for '{src_key}'"})
+                    return
+                s_mode = r.get("sizing_mode", "multiplier")
+                if s_mode not in ("multiplier", "fixed"):
+                    s_mode = "multiplier"
+                mult = max(0.01, float(r.get("multiplier", 1.0) or 1.0))
+                fixed_c = max(1, int(r.get("fixed_contracts", 1) or 1))
+                min_c = max(1, int(r.get("min_contracts", 1) or 1))
+                max_c = max(min_c, int(r.get("max_contracts", 20) or 20))
+                cleaned_rules[src_key] = {
+                    "target_symbol": tgt_sym,
+                    "sizing_mode": s_mode,
+                    "multiplier": mult,
+                    "fixed_contracts": fixed_c,
+                    "min_contracts": min_c,
+                    "max_contracts": max_c
+                }
+
+            updated_lucid = {
+                "enabled": enabled,
+                "mode": mode,
+                "webhook_url": webhook_url,
+                "webhook_secret": webhook_secret,
+                "tradovate": new_tv,
+                "whitelist_rules": cleaned_rules
+            }
+            save_atomic_json(LUCID_FILE, updated_lucid, "lucid")
+            log_event("LUCID", f"Updated Lucid Futures config (enabled={enabled}, mode={mode}, whitelist={len(cleaned_rules)} symbols)")
+            self.send_json(200, {"success": True, "lucid": mask_lucid_data(updated_lucid)})
             return
 
         if path == "/api/reload":

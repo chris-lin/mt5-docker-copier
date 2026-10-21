@@ -24,6 +24,7 @@ class TestWebAPI(unittest.TestCase):
         cls.orig_profiles_dir = copier_hub.PROFILES_DIR
         cls.orig_presets_file = copier_hub.PRESETS_FILE
         cls.orig_accounts_file = copier_hub.ACCOUNTS_FILE
+        cls.orig_lucid_file = copier_hub.LUCID_FILE
         cls.orig_master_ini = copier_hub.MASTER_INI_FILE
         cls.orig_slave_ini = copier_hub.SLAVE_INI_FILE
 
@@ -34,6 +35,7 @@ class TestWebAPI(unittest.TestCase):
         copier_hub.PROFILES_DIR = os.path.join(cls.temp_dir, "profiles")
         copier_hub.PRESETS_FILE = os.path.join(copier_hub.PROFILES_DIR, "presets.json")
         copier_hub.ACCOUNTS_FILE = os.path.join(copier_hub.PROFILES_DIR, "accounts.json")
+        copier_hub.LUCID_FILE = os.path.join(copier_hub.PROFILES_DIR, "lucid.json")
         copier_hub.MASTER_INI_FILE = os.path.join(cls.temp_dir, "vantage_data", "mt5-server.ini")
         copier_hub.SLAVE_INI_FILE = os.path.join(cls.temp_dir, "ftmo_data", "mt5-server.ini")
         copier_hub.WEB_STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
@@ -77,10 +79,14 @@ class TestWebAPI(unittest.TestCase):
         copier_hub.PROFILES_DIR = cls.orig_profiles_dir
         copier_hub.PRESETS_FILE = cls.orig_presets_file
         copier_hub.ACCOUNTS_FILE = cls.orig_accounts_file
+        copier_hub.LUCID_FILE = cls.orig_lucid_file
         copier_hub.MASTER_INI_FILE = cls.orig_master_ini
         copier_hub.SLAVE_INI_FILE = cls.orig_slave_ini
 
     def setUp(self):
+        with copier_hub.lucid_lock:
+            copier_hub.lucid_open_tickets.clear()
+            copier_hub.lucid_dispatched_orders.clear()
         with open(copier_hub.SYMBOL_MAP_FILE, "w", encoding="utf-8") as f:
             json.dump({"NAS100.r": "US100.cash"}, f)
         with open(copier_hub.LOT_RULES_FILE, "w", encoding="utf-8") as f:
@@ -450,6 +456,67 @@ class TestWebAPI(unittest.TestCase):
         self.assertIn("Login=99887766", slave_ini)
         self.assertIn("Password=secret_slave_pwd", slave_ini)
         self.assertIn("Expert=FTMOReceiver", slave_ini)
+
+    def test_lucid_parallel_whitelist_and_integer_partial_close(self):
+        # 1. Enable Lucid Trading via POST /api/lucid with strict whitelist (NAS100.r -> MNQZ6, XAUUSD247 -> MGCZ6, BTCUSD -> MBTZ6)
+        lucid_payload = {
+            "enabled": True,
+            "mode": "webhook",
+            "webhook_url": "",
+            "webhook_secret": "my_webhook_secret",
+            "whitelist_rules": {
+                "NAS100.r": {"target_symbol": "MNQZ6", "sizing_mode": "multiplier", "multiplier": 10.0, "fixed_contracts": 1, "min_contracts": 1, "max_contracts": 20},
+                "XAUUSD247": {"target_symbol": "MGCZ6", "sizing_mode": "multiplier", "multiplier": 2.5, "fixed_contracts": 1, "min_contracts": 1, "max_contracts": 20},
+                "BTCUSD": {"target_symbol": "MBTZ6", "sizing_mode": "fixed", "multiplier": 1.0, "fixed_contracts": 2, "min_contracts": 1, "max_contracts": 10}
+            }
+        }
+        req_post = urllib.request.Request(
+            f"{self.server_url}/api/lucid",
+            data=json.dumps(lucid_payload).encode("utf-8"),
+            headers={**self._auth_header(), "Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req_post) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            self.assertTrue(res["success"])
+            self.assertEqual(res["lucid"]["webhook_secret"], "••••••••")
+
+        # 2. Snapshot 1: Open NAS100.r (0.40 lot -> 4 MNQZ6), EURUSD (0.50 lot -> NOT whitelisted), BTCUSD (0.10 lot -> 2 MBTZ6 fixed)
+        last_pos = {}
+        snap_1 = [
+            {"ticket": 5001, "symbol": "NAS100.r", "type": 0, "volume": 0.40, "price": 20000.0, "sl": 0, "tp": 0},
+            {"ticket": 5002, "symbol": "EURUSD", "type": 1, "volume": 0.50, "price": 1.0800, "sl": 0, "tp": 0},
+            {"ticket": 5003, "symbol": "BTCUSD", "type": 0, "volume": 0.10, "price": 68000.0, "sl": 0, "tp": 0}
+        ]
+        last_pos, ftmo_cmds_1 = copier_hub.process_position_snapshot(last_pos, snap_1)
+        # FTMO receives all 3 trades
+        self.assertEqual(len(ftmo_cmds_1), 3)
+        # Lucid ONLY receives whitelisted NAS100.r (4 MNQZ6) and BTCUSD (2 MBTZ6), ignoring EURUSD
+        with copier_hub.lucid_lock:
+            lucid_orders = list(copier_hub.lucid_dispatched_orders)
+        self.assertEqual(len(lucid_orders), 2)
+        self.assertEqual(lucid_orders[0], {"event": "OPEN", "ticket": 5001, "src_symbol": "NAS100.r", "symbol": "MNQZ6", "action": "Buy", "quantity": 4})
+        self.assertEqual(lucid_orders[1], {"event": "OPEN", "ticket": 5003, "src_symbol": "BTCUSD", "symbol": "MBTZ6", "action": "Buy", "quantity": 2})
+
+        # 3. Snapshot 2: Partial close 50% on NAS100.r (0.40 -> 0.20) -> Lucid sells 2 MNQZ6 (leaving 2 contracts)
+        snap_2 = [
+            {"ticket": 5001, "symbol": "NAS100.r", "type": 0, "volume": 0.20, "price": 20000.0, "sl": 0, "tp": 0},
+            {"ticket": 5002, "symbol": "EURUSD", "type": 1, "volume": 0.50, "price": 1.0800, "sl": 0, "tp": 0},
+            {"ticket": 5003, "symbol": "BTCUSD", "type": 0, "volume": 0.10, "price": 68000.0, "sl": 0, "tp": 0}
+        ]
+        last_pos, _ = copier_hub.process_position_snapshot(last_pos, snap_2)
+        with copier_hub.lucid_lock:
+            lucid_orders = list(copier_hub.lucid_dispatched_orders)
+        self.assertEqual(len(lucid_orders), 3)
+        self.assertEqual(lucid_orders[2], {"event": "PARTIAL", "ticket": 5001, "src_symbol": "NAS100.r", "symbol": "MNQZ6", "action": "Sell", "quantity": 2})
+
+        # 4. Snapshot 3: Close all positions -> Lucid sells remaining 2 MNQZ6 and 2 MBTZ6
+        last_pos, _ = copier_hub.process_position_snapshot(last_pos, [])
+        with copier_hub.lucid_lock:
+            lucid_orders = list(copier_hub.lucid_dispatched_orders)
+        self.assertEqual(len(lucid_orders), 5)
+        self.assertEqual(lucid_orders[3], {"event": "CLOSE", "ticket": 5001, "src_symbol": "NAS100.r", "symbol": "MNQZ6", "action": "Sell", "quantity": 2})
+        self.assertEqual(lucid_orders[4], {"event": "CLOSE", "ticket": 5003, "src_symbol": "BTCUSD", "symbol": "MBTZ6", "action": "Sell", "quantity": 2})
 
 if __name__ == "__main__":
     unittest.main()

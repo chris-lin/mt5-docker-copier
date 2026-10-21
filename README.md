@@ -12,6 +12,8 @@ While the default container names use `mt5_vantage` (Master / Signal Source) and
 
 * **Headless Docker Environment**: Runs MT5 instances inside minimal Linux containers via Wine without requiring an X11 server or GUI.
 * **Web Dashboard & Hot-Reload**: Built-in, zero-dependency browser management interface (`http://127.0.0.1:8080`) optimized for desktop and mobile browsers with live EA status indicators and HTTP Basic Auth security.
+* **Lucid Trading Parallel Futures Copier (`v3.0`)**: Broadcasts whitelisted trades (`MGC`/`GC` Gold, `MNQ`/`NQ` Nasdaq, `MBT`/`BTC` Bitcoin) in parallel to **Lucid Trading** (via Tradovate Direct REST API or Webhook Bridge) with automatic integer contract rounding and Netting partial/full close tracking—without needing a third Docker container.
+* **Zero-Overhead VPS Load Monitor (`v3.0`)**: 1-line collapsible host resource bar (`CPU`, `RAM`, `Swap`, `Disk`, `Uptime`) powered by 5-second cached `/proc` reads and background tab auto-pause (`document.hidden`).
 * **Multi-Broker Profile Presets (`v2.0`)**: Bundle `symbol_map` and `lot_rules` into named presets (`Vantage -> FTMO`, `Vantage -> FundedNext`, `Exness -> FTMO`, `Exness -> FundedNext`) stored in `profiles/presets.json` for instant, zero-downtime hot-swapping.
 * **Dual-Side MT5 Account Switcher (`v2.0`)**: Manage and switch both **Master (Sender)** and **Slave (Receiver)** MT5 accounts directly from the Web UI (`👤 Accounts` tab). Automatically generates UTF-16LE `mt5-server.ini` files, activates linked profile presets, and restarts the target Docker container in the background.
 * **Decoupled Mapping & Sizing Engine**:
@@ -30,18 +32,19 @@ While the default container names use `mt5_vantage` (Master / Signal Source) and
 mt5-docker-copier/
 ├── .gitignore
 ├── README.md
-├── CHANGELOG.md                   # Release history (v1.0 -> v2.0)
+├── CHANGELOG.md                   # Release history (v1.0 -> v3.0)
 ├── docker-compose.yml.example     # Docker Compose template
 ├── setup_firewall.sh              # Automated host firewall configuration
 ├── search_servers.sh              # Headless broker server search automation
-├── copier_hub.py                  # Python TCP routing hub & Web Dashboard (v2.0)
-├── lot_rules.json                 # Active lot size conversion rules
-├── symbol_map.json                # Active cross-broker symbol map
-├── profiles/
-│   ├── presets.example.json       # Template for multi-broker (symbol_map + lot_rules) presets
-│   ├── presets.json               # Local active profile presets (git-ignored)
+├── copier_hub.py                  # Python TCP routing hub & Web Dashboard (v3.0)
+├── config_templates/              # Tracked configuration templates
+│   ├── symbol_map.example.json    # Template for symbol_map.json
+│   ├── lot_rules.example.json     # Template for lot_rules.json
+│   ├── presets.example.json       # Template for multi-broker profile presets
 │   ├── accounts.example.json      # Template for Master/Slave MT5 credentials
-│   └── accounts.json              # Local MT5 credentials (git-ignored)
+│   ├── lucid.example.json         # Template for Lucid Trading parallel copier
+│   ├── mt5-server.ini.example     # MT5 startup config template
+│   └── common.ini.example         # Global MT5 flags (AllowDllImport, ExpertsEnable)
 ├── web/
 │   ├── index.html                 # Dashboard HTML layout
 │   ├── style.css                  # Responsive desktop & mobile stylesheet
@@ -49,12 +52,8 @@ mt5-docker-copier/
 ├── mql5/
 │   ├── VantageSender.mq5          # Master Sender EA (Winsock-based)
 │   └── FTMOReceiver.mq5           # Slave Receiver EA (Winsock + Dual-Anchor Tracking)
-├── tests/
-│   └── test_web_api.py            # Automated unit test suite
-└── config_templates/
-    ├── mt5-server.ini.example     # MT5 startup config template
-    ├── servers.dat                # Broker servers list
-    └── common.ini                 # Global MT5 flags (AllowDllImport, ExpertsEnable)
+└── tests/
+    └── test_web_api.py            # Automated unit test suite
 ```
 
 ---

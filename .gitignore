@@ -10,8 +10,8 @@ ftmo_data/
 __pycache__/
 *.pyc
 
-# Web Dashboard backups and local profiles/secrets
+# Web Dashboard backups and local runtime configs/secrets
 backups/
+.config/
 web_auth.json
-profiles/accounts.json
-profiles/presets.json
+profiles/
