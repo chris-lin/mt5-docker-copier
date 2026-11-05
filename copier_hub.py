@@ -121,13 +121,17 @@ log_lock = threading.Lock()
 def log_event(category: str, msg: str):
     """Log an event to stdout and store in recent history for the web UI."""
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{category}] {msg}")
     with log_lock:
         event_logs.append({
             "time": now_str,
             "category": category,
             "msg": str(msg)
         })
+    try:
+        print(f"[{category}] {msg}", flush=True)
+    except OSError:
+        # Ignore EIO ([Errno 5] Input/output error) when controlling SSH PTY is disconnected
+        pass
 
 
 def load_configs():
