@@ -645,6 +645,379 @@ class TestWebAPI(unittest.TestCase):
         self.assertEqual(fut_orders[5]["event"], "CLOSE")
         self.assertEqual(fut_orders[5]["quantity"], 2)
 
+    def test_tradovate_direct_free_mode_and_wildcard_futures_months(self):
+        import futures_copier
+        from unittest.mock import patch, MagicMock
+
+        # 1. Verify wildcard contract month extraction & reverse mapping to MT5 FTMO
+        cfg = futures_copier.get_default_futures_config()
+        sym_map = {"NAS100.r": "US100.cash"}
+
+        self.assertEqual(futures_copier.extract_futures_root("MGCM6"), "MGC")
+        self.assertEqual(futures_copier.extract_futures_root("MGC1!"), "MGC")
+        self.assertEqual(futures_copier.extract_futures_root("MNQU25"), "MNQ")
+        self.assertEqual(futures_copier.extract_futures_root("MESZ6"), "MES")
+
+        cfd_sym, cfd_lot, is_rev = futures_copier.resolve_reverse_futures_to_mt5("MGCM6", 3, cfg, sym_map)
+        self.assertTrue(is_rev)
+        self.assertEqual(cfd_sym, "XAUUSD")
+        self.assertEqual(cfd_lot, 0.30)
+
+        cfd_sym2, cfd_lot2, is_rev2 = futures_copier.resolve_reverse_futures_to_mt5("MGC1!", 2, cfg, sym_map)
+        self.assertTrue(is_rev2)
+        self.assertEqual(cfd_sym2, "XAUUSD")
+        self.assertEqual(cfd_lot2, 0.20)
+
+        cfd_sym3, cfd_lot3, is_rev3 = futures_copier.resolve_reverse_futures_to_mt5("MNQM6", 4, cfg, sym_map)
+        self.assertTrue(is_rev3)
+        self.assertEqual(cfd_sym3, "US100.cash")
+        self.assertEqual(cfd_lot3, 0.40)
+
+        # 2. Verify webhook_format payload adapters (Standard, TradersPost, PickMyTrade)
+        sample_open = {"event": "OPEN", "ticket": 901, "src_symbol": "XAUUSD", "symbol": "MGCZ6", "action": "Buy", "quantity": 2}
+        sample_close = {"event": "CLOSE", "ticket": 901, "src_symbol": "XAUUSD", "symbol": "MGCZ6", "action": "Sell", "quantity": 2}
+
+        tp_open = futures_copier.format_webhook_payload(sample_open, {"webhook_format": "traderspost", "webhook_secret": "s1"})
+        self.assertEqual(tp_open, {"ticker": "MGCZ6", "action": "buy", "quantity": 2, "secret": "s1"})
+        tp_close = futures_copier.format_webhook_payload(sample_close, {"webhook_format": "traderspost"})
+        self.assertEqual(tp_close, {"ticker": "MGCZ6", "action": "exit"})
+
+        pmt_open = futures_copier.format_webhook_payload(
+            sample_open,
+            {"webhook_format": "pickmytrade", "webhook_secret": "pmt_tok", "tradovate": {"account_spec": "TDFY50K"}}
+        )
+        self.assertEqual(pmt_open, {"symbol": "MGCZ6", "data": "buy", "quantity": 2, "account_name": "TDFY50K", "token": "pmt_tok"})
+
+        # 3. Verify $0 Free Direct Tradovate API auto-discovery, order placement & token auto-renewal
+        captured_requests = []
+
+        def fake_urlopen(req, timeout=8):
+            url = req.full_url
+            captured_requests.append((req.get_method(), url, req.data.decode("utf-8") if req.data else None))
+            resp_mock = MagicMock()
+            resp_mock.status = 200
+            resp_mock.__enter__.return_value = resp_mock
+            if "/account/list" in url:
+                resp_mock.read.return_value = json.dumps([{"id": 778899, "name": "TDFY50K_SIM", "active": True}]).encode("utf-8")
+            elif "/auth/renewaccesstoken" in url:
+                resp_mock.read.return_value = json.dumps({"accessToken": "renewed_bearer_tok_999"}).encode("utf-8")
+            else:
+                resp_mock.read.return_value = json.dumps({"orderId": 123456}).encode("utf-8")
+            return resp_mock
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            target_cfg = {
+                "id": "tradeify_main",
+                "name": "Tradeify 50K",
+                "prop_firm": "Tradeify",
+                "enabled": True,
+                "mode": "tradovate",
+                "tradovate": {
+                    "env": "demo",
+                    "account_spec": "",
+                    "account_id": 0,
+                    "access_token": "initial_bearer_tok_111"
+                }
+            }
+            # Placing an order with blank account_spec/account_id should auto-discover TDFY50K_SIM (778899) and POST /order/placeorder
+            futures_copier.execute_target_http(sample_open, target_cfg, copier_hub.log_event)
+            self.assertEqual(target_cfg["tradovate"]["account_spec"], "TDFY50K_SIM")
+            self.assertEqual(target_cfg["tradovate"]["account_id"], 778899)
+            self.assertEqual(len(captured_requests), 2)
+            self.assertIn("/account/list", captured_requests[0][1])
+            self.assertIn("/order/placeorder", captured_requests[1][1])
+            placed_body = json.loads(captured_requests[1][2])
+            self.assertEqual(placed_body["accountSpec"], "TDFY50K_SIM")
+            self.assertEqual(placed_body["accountId"], 778899)
+            self.assertEqual(placed_body["symbol"], "MGCZ6")
+            self.assertEqual(placed_body["orderQty"], 2)
+
+            # Renewing tokens should update access_token to renewed_bearer_tok_999
+            saved_configs = []
+            res_renew = futures_copier.renew_all_tradovate_tokens_once(
+                {"enabled": True, "targets": [target_cfg]},
+                lambda c: saved_configs.append(c),
+                copier_hub.log_event
+            )
+            self.assertTrue(res_renew["changed"])
+            self.assertEqual(len(saved_configs), 1)
+            self.assertEqual(saved_configs[0]["targets"][0]["tradovate"]["access_token"], "renewed_bearer_tok_999")
+
+    def test_tradovate_master_scale_in_reverse_and_self_loop_guard(self):
+        import futures_copier
+        from unittest.mock import patch, MagicMock
+
+        # Configure Tradeify 50K as Tradovate Master (account_id=778899, account_spec="TDFY50K_SIM")
+        # AND enable 2 Futures targets:
+        #   - Target 1: Same Tradeify 50K account (778899 / TDFY50K_SIM) -> MUST be skipped by Anti-Self-Loop Guard!
+        #   - Target 2: Separate Lucid 50K account (889900 / LUCID50K_SIM) -> MUST receive parallel Futures orders!
+        futures_cfg = futures_copier.get_default_futures_config()
+        futures_cfg["enabled"] = True
+        futures_cfg["master_source"]["tradovate_master"] = {
+            "enabled": True,
+            "env": "demo",
+            "poll_interval_sec": 1.0,
+            "account_id": 778899,
+            "account_spec": "TDFY50K_SIM",
+            "access_token": "tok_master_778899"
+        }
+        futures_cfg["targets"] = [
+            {
+                "id": "tradeify_self",
+                "name": "Tradeify 50K (Self)",
+                "prop_firm": "Tradeify",
+                "enabled": True,
+                "scale": 1.0,
+                "mode": "tradovate",
+                "tradovate": {
+                    "env": "demo",
+                    "account_spec": "TDFY50K_SIM",
+                    "account_id": 778899,
+                    "access_token": "tok_master_778899"
+                }
+            },
+            {
+                "id": "lucid_second",
+                "name": "Lucid 50K (Second Prop)",
+                "prop_firm": "Lucid Trading",
+                "enabled": True,
+                "scale": 1.0,
+                "mode": "webhook",
+                "webhook_url": "",
+                "tradovate": {
+                    "env": "demo",
+                    "account_spec": "LUCID50K_SIM",
+                    "account_id": 889900,
+                    "access_token": ""
+                }
+            }
+        ]
+        futures_cfg["whitelist_rules"]["MGCM6"] = {
+            "target_symbol": "MGCM6",
+            "sizing_mode": "multiplier",
+            "multiplier": 1.0,
+            "fixed_contracts": 1,
+            "min_contracts": 1,
+            "max_contracts": 20
+        }
+        copier_hub.save_atomic_json(copier_hub.LUCID_FILE, futures_cfg, "futures_copier")
+
+        current_net_pos = [0]
+
+        def fake_tradovate_urlopen(req, timeout=6):
+            url = req.full_url
+            resp_mock = MagicMock()
+            resp_mock.status = 200
+            resp_mock.__enter__.return_value = resp_mock
+            if "/position/list" in url:
+                if current_net_pos[0] == 0:
+                    pos_list = [{"id": 50001, "accountId": 778899, "contractId": 301, "netPos": 0, "netPrice": 0.0}]
+                else:
+                    pos_list = [{"id": 50001, "accountId": 778899, "contractId": 301, "netPos": current_net_pos[0], "netPrice": 2950.5}]
+                resp_mock.read.return_value = json.dumps(pos_list).encode("utf-8")
+            elif "/contract/item?id=301" in url:
+                resp_mock.read.return_value = json.dumps({"id": 301, "name": "MGCM6"}).encode("utf-8")
+            else:
+                resp_mock.read.return_value = json.dumps({}).encode("utf-8")
+            return resp_mock
+
+        with patch("urllib.request.urlopen", side_effect=fake_tradovate_urlopen):
+            # Step 1: Open Long 1 MGCM6 on Tradovate (netPos = +1)
+            current_net_pos[0] = 1
+            cmds_1 = futures_copier.poll_tradovate_master_once(
+                futures_cfg,
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertEqual(cmds_1, ["OPEN;XAUUSD;0;0.1;0;0;5000101"])
+
+            # Check Anti-Self-Loop Guard: ONLY lucid_second received the order; tradeify_self was skipped!
+            with copier_hub.lucid_lock:
+                dispatched_1 = list(copier_hub.futures_dispatched_orders)
+            self.assertEqual(len(dispatched_1), 1)
+            self.assertEqual(dispatched_1[0]["target_id"], "lucid_second")
+            self.assertEqual(dispatched_1[0]["event"], "OPEN")
+            self.assertEqual(dispatched_1[0]["quantity"], 1)
+
+            # Step 2: Scale-In Long +2 MGCM6 on Tradovate (netPos: 1 -> 3)
+            # Generates new layer ticket #5000102 for the +2 contract addition so FTMOReceiver.mq5 opens +0.2 lot!
+            current_net_pos[0] = 3
+            cmds_2 = futures_copier.poll_tradovate_master_once(
+                futures_cfg,
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertEqual(cmds_2, ["OPEN;XAUUSD;0;0.2;0;0;5000102"])
+
+            # Step 3: Partial Close 1 MGCM6 on Tradovate (netPos: 3 -> 2)
+            # Reduces LIFO layer ticket #5000102 from 2 -> 1 (50% partial close on #5000102)
+            current_net_pos[0] = 2
+            cmds_3 = futures_copier.poll_tradovate_master_once(
+                futures_cfg,
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertEqual(cmds_3, ["PARTIAL;XAUUSD;0.5;5000102"])
+
+            # Step 4: Reverse / Flip directly from Long 2 to Short 1 MGCM6 (netPos: +2 -> -1)
+            # Closes BOTH Long layer tickets (#5000101 and #5000102) FIRST, then opens Short 0.1 lot (#5000151)!
+            current_net_pos[0] = -1
+            cmds_4 = futures_copier.poll_tradovate_master_once(
+                futures_cfg,
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertEqual(cmds_4, [
+                "CLOSE;XAUUSD;5000101",
+                "CLOSE;XAUUSD;5000102",
+                "OPEN;XAUUSD;1;0.1;0;0;5000151"
+            ])
+
+            # Step 5: Flatten Short 1 MGCM6 (netPos: -1 -> 0)
+            current_net_pos[0] = 0
+            cmds_5 = futures_copier.poll_tradovate_master_once(
+                futures_cfg,
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertEqual(cmds_5, ["CLOSE;XAUUSD;5000151"])
+
+    def test_all_four_copying_routes_end_to_end(self):
+        import futures_copier
+        from unittest.mock import patch, MagicMock
+
+        # Configure realistic MT5 symbol map & lot rules (including target-symbol rules for XAUUSD and US100.cash)
+        with open(copier_hub.SYMBOL_MAP_FILE, "w", encoding="utf-8") as f:
+            json.dump({"NAS100.r": "US100.cash", "XAUUSD247": "XAUUSD"}, f)
+        with open(copier_hub.LOT_RULES_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "default_multiplier": 1.0,
+                "min_lot": 0.01,
+                "rules": {
+                    "XAUUSD247": {"multiplier": 0.25},
+                    "XAUUSD": {"fixed_lot": 2.0},
+                    "US100.cash": {"multiplier": 2.0}
+                }
+            }, f)
+        copier_hub.load_configs()
+
+        f_cfg = futures_copier.get_default_futures_config()
+        f_cfg["enabled"] = True
+        f_cfg["targets"] = [{
+            "id": "tradeify_main",
+            "name": "Tradeify 50K",
+            "prop_firm": "Tradeify",
+            "enabled": True,
+            "scale": 1.0,
+            "mode": "tradovate",
+            "tradovate": {
+                "env": "demo",
+                "account_spec": "TDFY50K_SIM",
+                "account_id": 778899,
+                "access_token": "tok_tradeify_123"
+            }
+        }]
+        f_cfg["master_source"]["tradovate_master"] = {
+            "enabled": True,
+            "env": "demo",
+            "account_id": 778899,
+            "account_spec": "TDFY50K_SIM",
+            "access_token": "tok_tradeify_123"
+        }
+        copier_hub.save_atomic_json(copier_hub.LUCID_FILE, f_cfg, "futures_copier")
+
+        def fake_urlopen(req, timeout=6):
+            url = req.full_url
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__.return_value = resp
+            if "/position/list" in url:
+                resp.read.return_value = json.dumps([
+                    {"id": 6001, "accountId": 778899, "contractId": 301, "netPos": 1, "netPrice": 2950.0},
+                    {"id": 6002, "accountId": 778899, "contractId": 302, "netPos": -3, "netPrice": 20100.0}
+                ]).encode("utf-8")
+            elif "/contract/item?id=301" in url:
+                resp.read.return_value = json.dumps({"id": 301, "name": "MGCM6"}).encode("utf-8")
+            elif "/contract/item?id=302" in url:
+                resp.read.return_value = json.dumps({"id": 302, "name": "MNQM6"}).encode("utf-8")
+            else:
+                resp.read.return_value = json.dumps({"orderId": 999}).encode("utf-8")
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            # ROUTE 1 (MT5 -> MT5) & ROUTE 2 (MT5 -> Futures Tradeify)
+            futures_copier.reset_futures_runtime_state()
+            _, mt5_cmds = copier_hub.process_position_snapshot({}, [
+                {"ticket": 1001, "symbol": "XAUUSD247", "type": 0, "volume": 0.80, "price": 2900.0, "sl": 0, "tp": 0},
+                {"ticket": 1002, "symbol": "NAS100.r", "type": 1, "volume": 0.30, "price": 20000.0, "sl": 0, "tp": 0}
+            ])
+            self.assertEqual(mt5_cmds, [
+                "OPEN;XAUUSD;0;0.2;0;0;1001",
+                "OPEN;US100.cash;1;0.6;0;0;1002"
+            ])
+            with copier_hub.lucid_lock:
+                fut_dispatched = list(copier_hub.futures_dispatched_orders)
+            self.assertEqual(len(fut_dispatched), 2)
+            self.assertEqual(fut_dispatched[0]["symbol"], "MGCZ6")
+            self.assertEqual(fut_dispatched[0]["quantity"], 2)  # 0.80 * 2.5 = 2 contracts
+            self.assertEqual(fut_dispatched[1]["symbol"], "MNQZ6")
+            self.assertEqual(fut_dispatched[1]["quantity"], 3)  # 0.30 * 10.0 = 3 contracts
+
+            # ROUTE 3 (Tradovate Master -> MT5 FTMO)
+            # Even though XAUUSD has fixed_lot=2.0 and US100.cash has multiplier=2.0 for CFD copying,
+            # Futures Master 1 MGCM6 MUST map to 0.10 lot XAUUSD, and 3 MNQM6 MUST map to 0.30 lot US100.cash!
+            futures_copier.reset_futures_runtime_state()
+            tv_cmds = futures_copier.poll_tradovate_master_once(
+                f_cfg,
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertEqual(tv_cmds, [
+                "OPEN;XAUUSD;0;0.1;0;0;600101",
+                "OPEN;US100.cash;1;0.3;0;0;600251"
+            ])
+
+            # ROUTE 4 (TradingView Webhook -> MT5 FTMO, ticketless scale-in, partial close, and full close)
+            futures_copier.reset_futures_runtime_state()
+            ok1, r1 = futures_copier.apply_master_webhook_signal(
+                {"symbol": "MGCM6", "action": "buy", "quantity": 1},
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertTrue(ok1)
+            self.assertEqual(len(r1["commands_sent"]), 1)
+            self.assertTrue(r1["commands_sent"][0].startswith("OPEN;XAUUSD;0;0.1;0;0;"))
+
+            # Ticketless Scale-In (+2 MGCM6 -> opens a second layer of 0.2 lot XAUUSD)
+            ok2, r2 = futures_copier.apply_master_webhook_signal(
+                {"symbol": "MGCM6", "action": "buy", "quantity": 2},
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertTrue(ok2)
+            self.assertEqual(len(r2["commands_sent"]), 1)
+            self.assertTrue(r2["commands_sent"][0].startswith("OPEN;XAUUSD;0;0.2;0;0;"))
+
+            # Ticketless Opposite Sell 1 MGCM6 (reduces net position from 3 -> 2 -> PARTIAL 0.5 on layer #2)
+            ok3, r3 = futures_copier.apply_master_webhook_signal(
+                {"symbol": "MGCM6", "action": "sell", "quantity": 1},
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertTrue(ok3)
+            self.assertEqual(len(r3["commands_sent"]), 1)
+            self.assertTrue(r3["commands_sent"][0].startswith("PARTIAL;XAUUSD;0.5;"))
+
+            # Ticketless Close all MGCM6 -> closes both layers
+            ok4, r4 = futures_copier.apply_master_webhook_signal(
+                {"symbol": "MGCM6", "action": "close"},
+                copier_hub.process_position_snapshot,
+                copier_hub.log_event
+            )
+            self.assertTrue(ok4)
+            self.assertEqual(len(r4["commands_sent"]), 2)
+            self.assertTrue(all(c.startswith("CLOSE;XAUUSD;") for c in r4["commands_sent"]))
+
 if __name__ == "__main__":
     unittest.main()
 

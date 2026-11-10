@@ -873,9 +873,10 @@ let symbolsData = {};
 
     container.innerHTML = targets.map(t => {
       const isEnabled = t.enabled !== false;
-      const modeLbl = t.mode === 'tradovate' ? '⚡ Tradovate Direct API' : '🔗 Webhook Bridge';
+      const whFmt = (t.webhook_format || 'standard').toUpperCase();
+      const modeLbl = t.mode === 'tradovate' ? '⚡ Tradovate Direct API ($0)' : `🔗 Webhook (${escapeHtml(whFmt)})`;
       const detailStr = t.mode === 'tradovate'
-        ? `${escapeHtml((t.tradovate && t.tradovate.env) || 'demo').toUpperCase()} · Spec: ${escapeHtml((t.tradovate && t.tradovate.account_spec) || '(Not set)')}`
+        ? `${escapeHtml((t.tradovate && t.tradovate.env) || 'demo').toUpperCase()} · Spec: ${escapeHtml((t.tradovate && t.tradovate.account_spec) || '(Auto-detect on order)')} · ID: ${escapeHtml(String((t.tradovate && t.tradovate.account_id) || 'Auto'))}`
         : `URL: ${escapeHtml(t.webhook_url || '(Simulated / Not set)')}`;
 
       return `
@@ -917,14 +918,16 @@ let symbolsData = {};
 
     document.getElementById('futures-target-modal-title').innerText = existing
       ? `Edit Futures Prop Account: ${existing.name}`
-      : 'Add Futures Prop Account (Lucid / Topstep / Apex)';
+      : 'Add Futures Prop Account (Tradeify / Lucid / Topstep)';
     document.getElementById('ft-modal-id').value = existing ? existing.id : '';
     document.getElementById('ft-modal-name').value = existing ? existing.name : '';
-    document.getElementById('ft-modal-firm').value = existing ? (existing.prop_firm || 'Lucid Trading') : 'Topstep';
+    document.getElementById('ft-modal-firm').value = existing ? (existing.prop_firm || 'Tradeify') : 'Tradeify';
     document.getElementById('ft-modal-enabled').value = (!existing || existing.enabled !== false) ? 'true' : 'false';
     document.getElementById('ft-modal-scale').value = existing ? (existing.scale ?? 1.0) : 1.0;
-    document.getElementById('ft-modal-mode').value = existing ? (existing.mode || 'webhook') : 'webhook';
+    document.getElementById('ft-modal-mode').value = existing ? (existing.mode || 'tradovate') : 'tradovate';
 
+    const whFmtEl = document.getElementById('ft-modal-wh-format');
+    if (whFmtEl) whFmtEl.value = existing ? (existing.webhook_format || 'standard') : 'standard';
     document.getElementById('ft-modal-wh-url').value = existing ? (existing.webhook_url || '') : '';
     document.getElementById('ft-modal-wh-secret').value = existing ? (existing.webhook_secret || '') : '';
 
@@ -947,10 +950,11 @@ let symbolsData = {};
     const name = document.getElementById('ft-modal-name').value.trim();
     const prop_firm = document.getElementById('ft-modal-firm').value;
     if (!name) {
-      showToast('Please enter an Account Display Name (e.g. Topstep 50K)', 'error');
+      showToast('Please enter an Account Display Name (e.g. Tradeify 50K)', 'error');
       return;
     }
 
+    const whFmtEl = document.getElementById('ft-modal-wh-format');
     const record = {
       id,
       name,
@@ -958,6 +962,7 @@ let symbolsData = {};
       enabled: document.getElementById('ft-modal-enabled').value === 'true',
       scale: Math.max(0.1, parseFloat(document.getElementById('ft-modal-scale').value) || 1.0),
       mode: document.getElementById('ft-modal-mode').value,
+      webhook_format: whFmtEl ? whFmtEl.value : 'standard',
       webhook_url: document.getElementById('ft-modal-wh-url').value.trim(),
       webhook_secret: document.getElementById('ft-modal-wh-secret').value || '••••••••',
       tradovate: {
@@ -979,6 +984,87 @@ let symbolsData = {};
     closeFuturesTargetModal();
     renderFuturesTargetsList();
     saveLucidConfig();
+  }
+
+  async function autoDetectTradovateTargetModal() {
+    const env = document.getElementById('ft-modal-tv-env').value || 'demo';
+    const token = document.getElementById('ft-modal-tv-token').value.trim();
+    const targetId = document.getElementById('ft-modal-id').value.trim();
+    try {
+      showToast('Verifying Tradovate token & discovering Account ID...');
+      const res = await fetchJSON('/api/tradovate-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ env, access_token: token, target_id: targetId, apply_to_target: false })
+      });
+      document.getElementById('ft-modal-tv-spec').value = res.account_spec || '';
+      document.getElementById('ft-modal-tv-acc-id').value = res.account_id || '';
+      showToast(`Verified! Found Account: ${res.account_spec} (ID: ${res.account_id})`);
+    } catch (e) {
+      // handled by fetchJSON
+    }
+  }
+
+  async function autoDetectTradovateMaster() {
+    const env = document.getElementById('tv-master-env').value || 'demo';
+    const token = document.getElementById('tv-master-token').value.trim();
+    try {
+      showToast('Verifying Master Tradovate token & discovering Account ID...');
+      const res = await fetchJSON('/api/tradovate-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ env, access_token: token, apply_to_master: true })
+      });
+      document.getElementById('tv-master-acc-id').value = res.account_id || '';
+      if (res.futures) {
+        lucidData = res.futures;
+        renderLucid();
+      }
+      showToast(`Master Synced! Account: ${res.account_spec} (ID: ${res.account_id})`);
+    } catch (e) {
+      // handled by fetchJSON
+    }
+  }
+
+  function initTradovateBookmarklet() {
+    const link = document.getElementById('tv-bookmarklet-link');
+    if (!link) return;
+    const hubOrigin = window.location.origin;
+    const code = `(function(){try{var t='';for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i),v=localStorage.getItem(k)||'';if(v.indexOf('accessToken')>-1||k.indexOf('authenticator')>-1||k.indexOf('sso')>-1){try{var o=JSON.parse(v);t=o.accessToken||o.token||(o.userData&&o.userData.accessToken)||t;}catch(e){}}if(!t&&v.split('.').length===3&&v.length>80)t=v.replace(/^"|"$/g,'');}if(!t)t=prompt('Paste Tradovate Bearer Token:');if(t)window.open('${hubOrigin}/?sync_tv_token='+encodeURIComponent(t.trim()),'_blank');}catch(e){alert('Sync error: '+e);}})();`;
+    link.setAttribute('href', 'javascript:' + code);
+  }
+
+  function explainBookmarklet(e) {
+    e.preventDefault();
+    showToast('Drag "🔖 ⚡ Sync Tradovate to Copier" to your browser Bookmarks Bar, then click it while on trader.tradovate.com!');
+  }
+
+  async function handleIncomingTradovateTokenSync() {
+    const params = new URLSearchParams(window.location.search);
+    const syncToken = params.get('sync_tv_token');
+    if (!syncToken) return;
+    const env = params.get('env') || 'demo';
+    window.history.replaceState({}, document.title, window.location.pathname);
+    try {
+      showToast('Syncing Tradovate Bearer token from browser...');
+      const res = await fetchJSON('/api/tradovate-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          env,
+          access_token: syncToken,
+          apply_to_target: true,
+          apply_to_master: true
+        })
+      });
+      if (res.futures) {
+        lucidData = res.futures;
+        renderLucid();
+      }
+      showToast(`⚡ Synced Tradovate Account: ${res.account_spec} (ID: ${res.account_id})!`);
+    } catch (e) {
+      // handled
+    }
   }
 
   function toggleFuturesTargetStatus(id) {
@@ -1147,11 +1233,13 @@ let symbolsData = {};
 
   // === INITIALIZE ===
   window.addEventListener('DOMContentLoaded', () => {
+    initTradovateBookmarklet();
     loadProfiles();
     loadAccounts();
     loadSymbols();
     loadLotRules();
     loadLucid();
+    handleIncomingTradovateTokenSync();
     refreshStatus();
     setInterval(() => {
       if (!document.hidden) {

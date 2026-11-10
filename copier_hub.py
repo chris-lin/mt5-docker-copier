@@ -27,6 +27,11 @@ from futures_copier import (
     get_enabled_targets,
     calculate_futures_order,
     resolve_reverse_futures_to_mt5,
+    format_webhook_payload,
+    discover_tradovate_account,
+    renew_tradovate_token,
+    renew_all_tradovate_tokens_once,
+    start_tradovate_token_renewer,
     dispatch_futures_order,
     apply_master_webhook_signal,
     start_tradovate_master_poller,
@@ -356,6 +361,22 @@ def calculate_lucid_order(src_symbol: str, src_lot: float, lucid_cfg: dict = Non
     return calculate_futures_order(src_symbol, src_lot, lucid_cfg, scale=1.0)
 
 
+def _is_same_tradovate_account(pos: dict, target_cfg: dict) -> bool:
+    """Return True if a Master position originated from the exact same Tradovate account as target_cfg (Anti-Self-Loop Guard)."""
+    tv = target_cfg.get("tradovate")
+    if not isinstance(tv, dict):
+        return False
+    src_id = int(pos.get("source_account_id") or 0)
+    tgt_id = int(tv.get("account_id") or 0)
+    if src_id > 0 and tgt_id > 0 and src_id == tgt_id:
+        return True
+    src_spec = str(pos.get("source_account_spec") or "").strip()
+    tgt_spec = str(tv.get("account_spec") or "").strip()
+    if src_spec and tgt_spec and src_spec.lower() == tgt_spec.lower():
+        return True
+    return False
+
+
 def process_position_snapshot(last_positions: dict, positions: list):
     """Compare previous and current Master position snapshots, dispatch commands to FTMO and all enabled Futures Prop Firms."""
     current_positions = {p["ticket"]: p for p in positions}
@@ -370,105 +391,28 @@ def process_position_snapshot(last_positions: dict, positions: list):
         min_lot = float(LOT_RULES.get("min_lot", 0.01))
         def_mult = float(LOT_RULES.get("default_multiplier", 1.0))
 
-    # 1. Detect open positions & partial closes
-    for ticket, pos in current_positions.items():
-        src_sym = pos["symbol"]
-        rev_sym, rev_lot, is_rev = resolve_reverse_futures_to_mt5(src_sym, pos["volume"], futures_cfg, sym_map_snapshot)
-        target_symbol = rev_sym if is_rev else map_symbol(src_sym)
+    effective_last_positions = dict(last_positions)
 
-        if ticket not in last_positions:
-            # If Master order is a Futures contract (e.g. MNQZ6) without an explicit LOT_RULES entry, use reverse_map lot_per_contract
-            if is_rev and src_sym not in rules_snapshot and target_symbol not in rules_snapshot:
-                vol = max(min_lot, round(rev_lot * def_mult, 2))
-            else:
-                vol = calculate_target_lot(target_symbol, pos["volume"], src_symbol=src_sym)
-
-            # Stealth SL/TP (Mode A): always pass 0;0 to avoid cross-broker quote mismatch
-            cmd = f"OPEN;{target_symbol};{pos['type']};{vol};0;0;{ticket}"
-            log_event("TRADE", f"Open detected: {src_sym} -> {target_symbol} vol={vol} (ticket #{ticket})")
-            send_to_ftmo(cmd)
-            commands_sent.append(cmd)
-
-            # Parallel Multi-Target Futures Routing (Lucid Trading, Topstep, Apex, etc.)
-            if futures_enabled:
-                entry_action = "Buy" if int(pos["type"]) == 0 else "Sell"
-                for t_cfg in enabled_targets:
-                    t_id = t_cfg.get("id", "lucid_main")
-                    scale = float(t_cfg.get("scale", 1.0) or 1.0)
-                    fut_res = calculate_futures_order(src_sym, pos["volume"], futures_cfg, scale=scale)
-                    if fut_res:
-                        fut_sym, contracts = fut_res
-                        state_obj = {
-                            "src_symbol": src_sym,
-                            "target_symbol": fut_sym,
-                            "action": entry_action,
-                            "contracts": contracts
-                        }
-                        with lucid_lock:
-                            target_open_tickets.setdefault(t_id, {})[ticket] = dict(state_obj)
-                            lucid_open_tickets[ticket] = dict(state_obj)
-                        dispatch_futures_order({
-                            "event": "OPEN",
-                            "ticket": ticket,
-                            "src_symbol": src_sym,
-                            "symbol": fut_sym,
-                            "action": entry_action,
-                            "quantity": contracts
-                        }, t_cfg, log_event)
-        else:
-            old_vol = float(last_positions[ticket]["volume"])
-            new_vol = float(pos["volume"])
-            if old_vol > 0 and new_vol < old_vol - 1e-6:
-                ratio = round((old_vol - new_vol) / old_vol, 6)
-                cmd = f"PARTIAL;{target_symbol};{ratio};{ticket}"
-                log_event(
-                    "TRADE",
-                    f"Partial close detected: {src_sym} -> {target_symbol} "
-                    f"({old_vol:.2f} -> {new_vol:.2f}, -{ratio*100:.1f}%, ticket #{ticket})"
-                )
-                send_to_ftmo(cmd)
-                commands_sent.append(cmd)
-
-                # Parallel Multi-Target Futures Partial Close (Integer Contracts)
-                if futures_enabled:
-                    for t_cfg in enabled_targets:
-                        t_id = t_cfg.get("id", "lucid_main")
-                        order_to_send = None
-                        with lucid_lock:
-                            t_map = target_open_tickets.get(t_id, {})
-                            state = t_map.get(ticket) or (lucid_open_tickets.get(ticket) if t_id == enabled_targets[0].get("id", "lucid_main") else None)
-                            if state:
-                                cur_c = int(state["contracts"])
-                                close_qty = int(round(cur_c * ratio))
-                                if cur_c > 1 and 1 <= close_qty < cur_c:
-                                    close_action = "Sell" if state["action"] == "Buy" else "Buy"
-                                    state["contracts"] = cur_c - close_qty
-                                    if ticket in lucid_open_tickets:
-                                        lucid_open_tickets[ticket]["contracts"] = state["contracts"]
-                                    order_to_send = {
-                                        "event": "PARTIAL",
-                                        "ticket": ticket,
-                                        "src_symbol": state["src_symbol"],
-                                        "symbol": state["target_symbol"],
-                                        "action": close_action,
-                                        "quantity": close_qty
-                                    }
-                        if order_to_send:
-                            dispatch_futures_order(order_to_send, t_cfg, log_event)
-
-    # 2. Detect closed positions
-    for ticket, pos in last_positions.items():
-        if ticket not in current_positions:
+    # 1. Detect closed positions OR direction flips (close old direction before opening new direction)
+    for ticket, pos in list(effective_last_positions.items()):
+        is_closed = ticket not in current_positions
+        is_flipped = (not is_closed) and (int(current_positions[ticket].get("type", 0)) != int(pos.get("type", 0)))
+        if is_closed or is_flipped:
             src_sym = pos["symbol"]
             rev_sym, _, is_rev = resolve_reverse_futures_to_mt5(src_sym, pos["volume"], futures_cfg, sym_map_snapshot)
             target_symbol = rev_sym if is_rev else map_symbol(src_sym)
             cmd = f"CLOSE;{target_symbol};{ticket}"
-            log_event("TRADE", f"Close detected: {src_sym} -> {target_symbol} (ticket #{ticket})")
+            log_event(
+                "TRADE",
+                f"{'Reverse close' if is_flipped else 'Close'} detected: {src_sym} -> {target_symbol} (ticket #{ticket})"
+            )
             send_to_ftmo(cmd)
             commands_sent.append(cmd)
 
             # Parallel Multi-Target Futures Full Exit (Remaining Integer Contracts)
             for t_cfg in enabled_targets:
+                if _is_same_tradovate_account(pos, t_cfg):
+                    continue
                 t_id = t_cfg.get("id", "lucid_main")
                 order_to_send = None
                 with lucid_lock:
@@ -498,6 +442,120 @@ def process_position_snapshot(last_positions: dict, positions: list):
                 lucid_open_tickets.pop(ticket, None)
                 for t_map in target_open_tickets.values():
                     t_map.pop(ticket, None)
+
+            if is_flipped:
+                effective_last_positions.pop(ticket, None)
+
+    # 2. Detect newly opened positions, scale-ins, and partial closes
+    for ticket, pos in current_positions.items():
+        src_sym = pos["symbol"]
+        rev_sym, rev_lot, is_rev = resolve_reverse_futures_to_mt5(src_sym, pos["volume"], futures_cfg, sym_map_snapshot)
+        target_symbol = rev_sym if is_rev else map_symbol(src_sym)
+
+        if ticket not in effective_last_positions:
+            # If Master order is a Futures contract (e.g. MNQZ6 / MGCM6) without an explicit LOT_RULES entry for src_sym,
+            # use reverse_map lot_per_contract (do NOT let target_symbol CFD rules treat integer futures contracts as CFD lots).
+            if is_rev and src_sym not in rules_snapshot:
+                vol = max(min_lot, round(rev_lot * def_mult, 2))
+            else:
+                vol = calculate_target_lot(target_symbol, pos["volume"], src_symbol=src_sym)
+
+            # Stealth SL/TP (Mode A): always pass 0;0 to avoid cross-broker quote mismatch
+            cmd = f"OPEN;{target_symbol};{pos['type']};{vol};0;0;{ticket}"
+            log_event("TRADE", f"Open detected: {src_sym} -> {target_symbol} vol={vol} (ticket #{ticket})")
+            send_to_ftmo(cmd)
+            commands_sent.append(cmd)
+
+            # Parallel Multi-Target Futures Routing (Lucid Trading, Tradeify, Topstep, Apex, etc.)
+            if futures_enabled:
+                entry_action = "Buy" if int(pos["type"]) == 0 else "Sell"
+                for t_cfg in enabled_targets:
+                    if _is_same_tradovate_account(pos, t_cfg):
+                        log_event(
+                            "INFO",
+                            f"Anti-Self-Loop Guard: skipped routing {src_sym} back to same Tradovate account ({t_cfg.get('name', t_cfg.get('id'))})"
+                        )
+                        continue
+                    t_id = t_cfg.get("id", "lucid_main")
+                    scale = float(t_cfg.get("scale", 1.0) or 1.0)
+                    fut_res = calculate_futures_order(src_sym, pos["volume"], futures_cfg, scale=scale)
+                    if fut_res:
+                        fut_sym, contracts = fut_res
+                        state_obj = {
+                            "src_symbol": src_sym,
+                            "target_symbol": fut_sym,
+                            "action": entry_action,
+                            "contracts": contracts
+                        }
+                        with lucid_lock:
+                            target_open_tickets.setdefault(t_id, {})[ticket] = dict(state_obj)
+                            lucid_open_tickets[ticket] = dict(state_obj)
+                        dispatch_futures_order({
+                            "event": "OPEN",
+                            "ticket": ticket,
+                            "src_symbol": src_sym,
+                            "symbol": fut_sym,
+                            "action": entry_action,
+                            "quantity": contracts
+                        }, t_cfg, log_event)
+        else:
+            old_vol = float(effective_last_positions[ticket]["volume"])
+            new_vol = float(pos["volume"])
+            if old_vol > 0 and new_vol > old_vol + 1e-6:
+                delta_vol = round(new_vol - old_vol, 6)
+                _, delta_rev_lot, _ = resolve_reverse_futures_to_mt5(src_sym, delta_vol, futures_cfg, sym_map_snapshot)
+                if is_rev and src_sym not in rules_snapshot:
+                    add_vol = max(min_lot, round(delta_rev_lot * def_mult, 2))
+                else:
+                    add_vol = calculate_target_lot(target_symbol, delta_vol, src_symbol=src_sym)
+                scale_ticket = int(ticket) * 100 + int(round(new_vol * 100)) % 99 + 1
+                cmd = f"OPEN;{target_symbol};{pos['type']};{add_vol};0;0;{scale_ticket}"
+                log_event(
+                    "TRADE",
+                    f"Scale-in detected: {src_sym} -> {target_symbol} "
+                    f"({old_vol:.2f} -> {new_vol:.2f}, +{add_vol} lot, ticket #{scale_ticket})"
+                )
+                send_to_ftmo(cmd)
+                commands_sent.append(cmd)
+            elif old_vol > 0 and new_vol < old_vol - 1e-6:
+                ratio = round((old_vol - new_vol) / old_vol, 6)
+                cmd = f"PARTIAL;{target_symbol};{ratio};{ticket}"
+                log_event(
+                    "TRADE",
+                    f"Partial close detected: {src_sym} -> {target_symbol} "
+                    f"({old_vol:.2f} -> {new_vol:.2f}, -{ratio*100:.1f}%, ticket #{ticket})"
+                )
+                send_to_ftmo(cmd)
+                commands_sent.append(cmd)
+
+                # Parallel Multi-Target Futures Partial Close (Integer Contracts)
+                if futures_enabled:
+                    for t_cfg in enabled_targets:
+                        if _is_same_tradovate_account(pos, t_cfg):
+                            continue
+                        t_id = t_cfg.get("id", "lucid_main")
+                        order_to_send = None
+                        with lucid_lock:
+                            t_map = target_open_tickets.get(t_id, {})
+                            state = t_map.get(ticket) or (lucid_open_tickets.get(ticket) if t_id == enabled_targets[0].get("id", "lucid_main") else None)
+                            if state:
+                                cur_c = int(state["contracts"])
+                                close_qty = int(round(cur_c * ratio))
+                                if cur_c > 1 and 1 <= close_qty < cur_c:
+                                    close_action = "Sell" if state["action"] == "Buy" else "Buy"
+                                    state["contracts"] = cur_c - close_qty
+                                    if ticket in lucid_open_tickets:
+                                        lucid_open_tickets[ticket]["contracts"] = state["contracts"]
+                                    order_to_send = {
+                                        "event": "PARTIAL",
+                                        "ticket": ticket,
+                                        "src_symbol": state["src_symbol"],
+                                        "symbol": state["target_symbol"],
+                                        "action": close_action,
+                                        "quantity": close_qty
+                                    }
+                        if order_to_send:
+                            dispatch_futures_order(order_to_send, t_cfg, log_event)
 
     return current_positions, commands_sent
 
@@ -946,6 +1004,9 @@ def _save_futures_or_lucid_payload(req_data: dict) -> tuple:
             t_mode = t.get("mode", old_t.get("mode", "webhook"))
             if t_mode not in ("webhook", "tradovate"):
                 t_mode = "webhook"
+            t_wh_fmt = str(t.get("webhook_format", old_t.get("webhook_format", "standard"))).strip().lower()
+            if t_wh_fmt not in ("standard", "traderspost", "pickmytrade"):
+                t_wh_fmt = "standard"
             t_wh_sec = t.get("webhook_secret", "••••••••")
             t_tv_in = t.get("tradovate", {})
             t_tv_pwd = t_tv_in.get("password", "••••••••")
@@ -957,6 +1018,7 @@ def _save_futures_or_lucid_payload(req_data: dict) -> tuple:
                 "enabled": bool(t.get("enabled", old_t.get("enabled", True))),
                 "scale": max(0.1, float(t.get("scale", old_t.get("scale", 1.0)) or 1.0)),
                 "mode": t_mode,
+                "webhook_format": t_wh_fmt,
                 "webhook_url": str(t.get("webhook_url", old_t.get("webhook_url", ""))).strip(),
                 "webhook_secret": old_t.get("webhook_secret", "") if t_wh_sec == "••••••••" else t_wh_sec,
                 "tradovate": {
@@ -1432,6 +1494,85 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"success": True, "lucid": masked, "futures": masked})
             return
 
+        if path == "/api/tradovate-sync":
+            cur_cfg = load_lucid_data()
+            env = str(req_data.get("env", "demo") or "demo").strip()
+            if env not in ("demo", "live"):
+                env = "demo"
+            target_id = str(req_data.get("target_id") or "").strip()
+            apply_to_master = bool(req_data.get("apply_to_master", False))
+            apply_to_target = bool(req_data.get("apply_to_target", False))
+            raw_token = str(req_data.get("access_token") or "").strip()
+
+            # Resolve existing token if masked placeholder was passed
+            if not raw_token or raw_token == "••••••••":
+                if target_id:
+                    t_match = next((t for t in cur_cfg.get("targets", []) if t.get("id") == target_id), None)
+                    if t_match:
+                        raw_token = (t_match.get("tradovate", {}).get("access_token") or "").strip()
+                if (not raw_token or raw_token == "••••••••") and apply_to_master:
+                    raw_token = (cur_cfg.get("master_source", {}).get("tradovate_master", {}).get("access_token") or "").strip()
+                if not raw_token or raw_token == "••••••••":
+                    raw_token = (cur_cfg.get("tradovate", {}).get("access_token") or "").strip()
+
+            if not raw_token or raw_token == "••••••••":
+                self.send_json(400, {"success": False, "error": "Please paste a valid Tradovate Bearer Access Token first"})
+                return
+
+            try:
+                disc = discover_tradovate_account(env, raw_token)
+            except Exception as e:
+                self.send_json(400, {"success": False, "error": f"Failed to verify Tradovate token: {e}"})
+                return
+
+            acc_id = disc["account_id"]
+            acc_spec = disc["account_spec"]
+            persisted = False
+
+            if apply_to_master:
+                tv_m = cur_cfg.setdefault("master_source", {}).setdefault("tradovate_master", {})
+                tv_m["env"] = env
+                tv_m["access_token"] = raw_token
+                tv_m["account_id"] = acc_id
+                tv_m["account_spec"] = acc_spec
+                tv_m["enabled"] = True
+                persisted = True
+
+            if apply_to_target or target_id:
+                targets = cur_cfg.setdefault("targets", [])
+                t_obj = next((t for t in targets if t.get("id") == target_id), None)
+                if not t_obj and apply_to_target:
+                    # Find first Tradeify or Tradovate target, or create one
+                    t_obj = next((t for t in targets if t.get("prop_firm") == "Tradeify" or t.get("mode") == "tradovate"), None)
+                    if not t_obj and targets:
+                        t_obj = targets[0]
+                if t_obj:
+                    t_obj["mode"] = "tradovate"
+                    tv_obj = t_obj.setdefault("tradovate", {})
+                    tv_obj["env"] = env
+                    tv_obj["access_token"] = raw_token
+                    tv_obj["account_id"] = acc_id
+                    tv_obj["account_spec"] = acc_spec
+                    persisted = True
+
+            if persisted:
+                if cur_cfg.get("targets"):
+                    cur_cfg["tradovate"] = dict(cur_cfg["targets"][0].get("tradovate", {}))
+                save_atomic_json(LUCID_FILE, cur_cfg, "futures_copier")
+                log_event("FUTURES", f"Synced Tradovate account '{acc_spec}' (ID: {acc_id}, env={env})")
+
+            masked = mask_futures_data(cur_cfg)
+            self.send_json(200, {
+                "success": True,
+                "env": env,
+                "account_id": acc_id,
+                "account_spec": acc_spec,
+                "accounts": disc["accounts"],
+                "persisted": persisted,
+                "futures": masked
+            })
+            return
+
         if path == "/api/reload":
             try:
                 load_configs()
@@ -1477,6 +1618,11 @@ if __name__ == "__main__":
     t_ftmo.start()
     t_web.start()
     start_tradovate_master_poller(load_lucid_data, process_position_snapshot, log_event)
+    start_tradovate_token_renewer(
+        load_lucid_data,
+        lambda cfg: save_atomic_json(LUCID_FILE, cfg, "futures_copier"),
+        log_event
+    )
 
     log_event("SYSTEM", f"All services online. Web Dashboard on {WEB_HOST}:{WEB_PORT}. Press Ctrl+C to stop.")
     try:

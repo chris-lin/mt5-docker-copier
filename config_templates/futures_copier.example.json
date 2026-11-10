@@ -21,6 +21,26 @@
       "enabled": true,
       "scale": 1.0,
       "mode": "webhook",
+      "webhook_format": "standard",
+      "webhook_url": "",
+      "webhook_secret": "",
+      "tradovate": {
+        "env": "demo",
+        "username": "",
+        "password": "",
+        "account_spec": "",
+        "account_id": 0,
+        "access_token": ""
+      }
+    },
+    {
+      "id": "tradeify_main",
+      "name": "Tradeify 50K (Tradovate)",
+      "prop_firm": "Tradeify",
+      "enabled": false,
+      "scale": 1.0,
+      "mode": "tradovate",
+      "webhook_format": "standard",
       "webhook_url": "",
       "webhook_secret": "",
       "tradovate": {
@@ -39,6 +59,7 @@
       "enabled": false,
       "scale": 1.0,
       "mode": "webhook",
+      "webhook_format": "standard",
       "webhook_url": "",
       "webhook_secret": "",
       "tradovate": {

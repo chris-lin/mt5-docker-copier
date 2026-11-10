@@ -288,10 +288,13 @@
       <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid var(--card-border); border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
           <div>
-            <div style="font-weight: 700; color: var(--accent);">📡 TradingView / Tradovate Master Signal Input (Optional)</div>
+            <div style="font-weight: 700; color: var(--accent);">📡 TradingView / Tradovate Master Signal Input & $0 Free Token Sync</div>
             <div style="font-size: 0.8rem; color: var(--text-muted);">
-              Trade from <strong>MT5 (Vantage / Pepperstone)</strong>, <strong>TradingView CFD</strong>, or <strong>TradingView bound to Tradovate Futures</strong> — all automatically copy to FTMO + Futures Slaves!
+              Trade from <strong>MT5 (Vantage)</strong> or <strong>TradingView (Tradeify / Tradovate)</strong> — all contract months (<code>MGC*</code>, <code>MNQ*</code>, <code>MES*</code>, <code>MBT*</code>) automatically map to FTMO!
             </div>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+            <a id="tv-bookmarklet-link" href="#" class="btn btn-secondary btn-sm" style="text-decoration: none; border-color: var(--accent); color: var(--accent);" onclick="explainBookmarklet(event)" title="Drag this button to your browser Bookmarks Bar, then click it while logged into trader.tradovate.com">🔖 ⚡ Sync Tradovate to Copier</a>
           </div>
         </div>
 
@@ -300,7 +303,7 @@
             <label class="input-label">Tradovate Master Auto-Poller</label>
             <select id="tv-master-enabled" onchange="toggleTvMasterFields()">
               <option value="false">⏸️ Off (Use MT5 Master or Webhook)</option>
-              <option value="true">🟢 Poll Tradovate Master Positions</option>
+              <option value="true">🟢 Poll Tradovate Master Positions ($0 Free)</option>
             </select>
           </div>
           <div class="input-group" style="margin-bottom: 0;">
@@ -318,12 +321,12 @@
             <div class="input-group">
               <label class="input-label">Master Tradovate Env</label>
               <select id="tv-master-env">
-                <option value="demo">Demo (demo.tradovateapi.com)</option>
+                <option value="demo">Demo / Prop (demo.tradovateapi.com)</option>
                 <option value="live">Live (live.tradovateapi.com)</option>
               </select>
             </div>
             <div class="input-group">
-              <label class="input-label">Master Account ID (Optional filter)</label>
+              <label class="input-label">Master Account ID (Auto-detected)</label>
               <input type="number" id="tv-master-acc-id" inputmode="numeric" placeholder="0 = Any open position">
             </div>
             <div class="input-group">
@@ -332,8 +335,11 @@
             </div>
           </div>
           <div class="input-group" style="margin-bottom: 0;">
-            <label class="input-label">Master Tradovate Access Token (Bearer)</label>
-            <input type="password" id="tv-master-token" placeholder="Leave blank to keep existing token">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem; flex-wrap: wrap; gap: 0.4rem;">
+              <label class="input-label" style="margin-bottom: 0;">Master Tradovate Access Token (Bearer — Auto-renews every 35m)</label>
+              <button type="button" class="btn btn-secondary btn-sm" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="autoDetectTradovateMaster()">🔍 Auto-Detect Account ID & Verify</button>
+            </div>
+            <input type="password" id="tv-master-token" placeholder="Paste Bearer token or use 🔖 Sync Bookmarklet">
           </div>
         </div>
       </div>
@@ -527,16 +533,29 @@
 
     <div id="ft-modal-webhook-box">
       <div class="input-group">
-        <label class="input-label">Webhook Endpoint URL (PickMyTrade / TradersPost / ProjectX)</label>
+        <label class="input-label">Webhook Endpoint URL (PickMyTrade / TradersPost / Custom)</label>
         <input type="text" id="ft-modal-wh-url" placeholder="https://api.pickmytrade.trade/v2/add-trade-data">
       </div>
-      <div class="input-group" style="margin-bottom: 0;">
-        <label class="input-label">Webhook Secret / Token (Optional)</label>
-        <input type="password" id="ft-modal-wh-secret" placeholder="Leave blank to keep existing">
+      <div class="grid-2">
+        <div class="input-group" style="margin-bottom: 0;">
+          <label class="input-label">Webhook Payload Format</label>
+          <select id="ft-modal-wh-format">
+            <option value="standard">Standard JSON (Default)</option>
+            <option value="traderspost">TradersPost (ticker / action / exit)</option>
+            <option value="pickmytrade">PickMyTrade (symbol / data / close)</option>
+          </select>
+        </div>
+        <div class="input-group" style="margin-bottom: 0;">
+          <label class="input-label">Webhook Secret / Token (Optional)</label>
+          <input type="password" id="ft-modal-wh-secret" placeholder="Leave blank to keep existing">
+        </div>
       </div>
     </div>
 
     <div id="ft-modal-tradovate-box" style="display: none;">
+      <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; padding: 0.6rem 0.75rem; margin-bottom: 0.75rem; font-size: 0.78rem; color: var(--text-muted);">
+        🟢 <strong>$0 Free Direct Tradovate Mode:</strong> Paste your Tradovate Web Bearer Token below and click <strong>🔍 Auto-Detect</strong> (or leave Spec/ID blank — the hub auto-discovers your Account ID and auto-renews the token every 35 minutes!).
+      </div>
       <div class="grid-3">
         <div class="input-group">
           <label class="input-label">Tradovate Env</label>
@@ -546,17 +565,20 @@
           </select>
         </div>
         <div class="input-group">
-          <label class="input-label">Account Spec</label>
-          <input type="text" id="ft-modal-tv-spec" placeholder="e.g. LUCID12345">
+          <label class="input-label">Account Spec (Auto)</label>
+          <input type="text" id="ft-modal-tv-spec" placeholder="Auto-detected">
         </div>
         <div class="input-group">
-          <label class="input-label">Account ID</label>
-          <input type="number" id="ft-modal-tv-acc-id" inputmode="numeric" placeholder="e.g. 987654">
+          <label class="input-label">Account ID (Auto)</label>
+          <input type="number" id="ft-modal-tv-acc-id" inputmode="numeric" placeholder="Auto-detected">
         </div>
       </div>
       <div class="input-group" style="margin-bottom: 0;">
-        <label class="input-label">Tradovate Access Token (Bearer)</label>
-        <input type="password" id="ft-modal-tv-token" placeholder="Leave blank to keep existing token">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem; flex-wrap: wrap; gap: 0.4rem;">
+          <label class="input-label" style="margin-bottom: 0;">Tradovate Access Token (Bearer)</label>
+          <button type="button" class="btn btn-secondary btn-sm" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="autoDetectTradovateTargetModal()">🔍 Auto-Detect Account ID & Verify</button>
+        </div>
+        <input type="password" id="ft-modal-tv-token" placeholder="Paste Bearer token (or leave blank to keep existing)">
       </div>
     </div>
 

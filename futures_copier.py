@@ -1,9 +1,41 @@
 import json
+import re
 import threading
 import time
 import urllib.request
 import urllib.error
 from collections import deque
+
+# Canonical Futures root contract mappings (auto-matches any contract month e.g. MGCM6, MGCZ6, MGC1!)
+DEFAULT_FUTURES_ROOT_MAP = {
+    "MGC": {"mt5_symbol": "XAUUSD", "lot_per_contract": 0.10},
+    "GC":  {"mt5_symbol": "XAUUSD", "lot_per_contract": 1.00},
+    "MNQ": {"mt5_symbol": "US100.cash", "lot_per_contract": 0.10},
+    "NQ":  {"mt5_symbol": "US100.cash", "lot_per_contract": 1.00},
+    "MES": {"mt5_symbol": "US500.cash", "lot_per_contract": 0.10},
+    "ES":  {"mt5_symbol": "US500.cash", "lot_per_contract": 1.00},
+    "MYM": {"mt5_symbol": "US30.cash", "lot_per_contract": 0.10},
+    "YM":  {"mt5_symbol": "US30.cash", "lot_per_contract": 1.00},
+    "MBT": {"mt5_symbol": "BTCUSD", "lot_per_contract": 0.10},
+    "BTC": {"mt5_symbol": "BTCUSD", "lot_per_contract": 1.00},
+}
+
+_FUTURES_CONTRACT_RE = re.compile(r"^([A-Z0-9]{2,4}?)(?:[FGHJKMNQUVXZ]\d{1,2}|[12]!)$")
+
+
+def extract_futures_root(symbol: str) -> str:
+    """
+    Extract canonical root symbol from a futures contract ticker.
+    Examples: 'MGCM6' -> 'MGC', 'MNQZ26' -> 'MNQ', 'MGC1!' -> 'MGC'.
+    Returns empty string if symbol does not match futures contract pattern.
+    """
+    s = (symbol or "").strip().upper()
+    m = _FUTURES_CONTRACT_RE.match(s)
+    if m and m.group(1) in DEFAULT_FUTURES_ROOT_MAP:
+        return m.group(1)
+    if s in DEFAULT_FUTURES_ROOT_MAP:
+        return s
+    return ""
 
 # Shared state for Futures Copier (Lucid Trading, Topstep, Apex, etc.) & External/Tradovate Master
 lucid_lock = threading.Lock()
@@ -52,6 +84,26 @@ def get_default_futures_config() -> dict:
                 "enabled": True,
                 "scale": 1.0,
                 "mode": "webhook",
+                "webhook_format": "standard",
+                "webhook_url": "",
+                "webhook_secret": "",
+                "tradovate": {
+                    "env": "demo",
+                    "username": "",
+                    "password": "",
+                    "account_spec": "",
+                    "account_id": 0,
+                    "access_token": ""
+                }
+            },
+            {
+                "id": "tradeify_main",
+                "name": "Tradeify 50K (Tradovate)",
+                "prop_firm": "Tradeify",
+                "enabled": False,
+                "scale": 1.0,
+                "mode": "tradovate",
+                "webhook_format": "standard",
                 "webhook_url": "",
                 "webhook_secret": "",
                 "tradovate": {
@@ -70,6 +122,7 @@ def get_default_futures_config() -> dict:
                 "enabled": False,
                 "scale": 1.0,
                 "mode": "webhook",
+                "webhook_format": "standard",
                 "webhook_url": "",
                 "webhook_secret": "",
                 "tradovate": {
@@ -165,6 +218,7 @@ def normalize_futures_config(data: dict) -> dict:
             t.setdefault("enabled", True)
             t.setdefault("scale", 1.0)
             t.setdefault("mode", "webhook")
+            t.setdefault("webhook_format", "standard")
             t.setdefault("webhook_url", "")
             t.setdefault("webhook_secret", "")
             tv = t.setdefault("tradovate", {})
@@ -250,7 +304,7 @@ def calculate_futures_order(src_symbol: str, src_lot: float, futures_cfg: dict, 
     # Check if src_symbol is ALREADY a whitelisted target futures contract or in master_source.reverse_map
     rev_map = futures_cfg.get("master_source", {}).get("reverse_map", {})
     whitelisted_contracts = {r.get("target_symbol") for r in rules.values() if isinstance(r, dict) and r.get("target_symbol")}
-    if src_symbol in rev_map or src_symbol in whitelisted_contracts:
+    if src_symbol in rev_map or src_symbol in whitelisted_contracts or extract_futures_root(src_symbol):
         contracts = max(1, int(round(float(src_lot) * float(scale))))
         return src_symbol, contracts
 
@@ -259,16 +313,29 @@ def calculate_futures_order(src_symbol: str, src_lot: float, futures_cfg: dict, 
 
 def resolve_reverse_futures_to_mt5(src_symbol: str, src_volume: float, futures_cfg: dict, symbol_map: dict):
     """
-    If the Master order originated on a Futures symbol (e.g. MGCZ6, MNQZ6, MBTZ6 on TradingView/Tradovate),
-    convert it to the corresponding MT5 CFD symbol and CFD lot size using master_source.reverse_map.
+    If the Master order originated on a Futures symbol (e.g. MGCZ6, MGCM6, MGC1!, MNQZ6 on TradingView/Tradovate),
+    convert it to the corresponding MT5 CFD symbol and CFD lot size using master_source.reverse_map
+    or canonical root prefix matching (MGC*, GC*, MNQ*, NQ*, MES*, ES*, MYM*, YM*, MBT*).
     Returns (mapped_cfd_symbol, base_cfd_lot, is_reverse_mapped).
     """
     if src_symbol in symbol_map:
         return symbol_map[src_symbol], float(src_volume), False
 
     rev_map = (futures_cfg or {}).get("master_source", {}).get("reverse_map", {})
-    if src_symbol in rev_map:
-        entry = rev_map[src_symbol]
+    entry = rev_map.get(src_symbol)
+
+    if not entry:
+        root = extract_futures_root(src_symbol)
+        if root:
+            # First check if user customized any contract with the same root in reverse_map
+            for k, v in rev_map.items():
+                if isinstance(v, dict) and extract_futures_root(k) == root:
+                    entry = v
+                    break
+            if not entry:
+                entry = DEFAULT_FUTURES_ROOT_MAP.get(root)
+
+    if entry:
         mt5_sym = (entry.get("mt5_symbol") or src_symbol).strip()
         # Allow SYMBOL_MAP to further map the canonical CFD symbol if desired
         final_sym = symbol_map.get(mt5_sym, mt5_sym)
@@ -277,6 +344,107 @@ def resolve_reverse_futures_to_mt5(src_symbol: str, src_volume: float, futures_c
         return final_sym, cfd_lot, True
 
     return src_symbol, float(src_volume), False
+
+
+def format_webhook_payload(order_payload: dict, target_cfg: dict) -> dict:
+    """
+    Format outgoing webhook JSON body according to target_cfg['webhook_format']:
+      - 'standard': {"event", "ticket", "src_symbol", "symbol", "action", "quantity", ["secret"]}
+      - 'traderspost': {"ticker", "action": "buy"|"sell"|"exit", ["quantity"], ["secret"]}
+      - 'pickmytrade': {"symbol", "data": "buy"|"sell"|"close", "quantity", "account_name", ["token"]}
+    """
+    fmt = (target_cfg.get("webhook_format") or "standard").strip().lower()
+    secret = (target_cfg.get("webhook_secret") or "").strip()
+    event = str(order_payload.get("event", "OPEN")).upper()
+    symbol = str(order_payload.get("symbol", "")).strip()
+    action = str(order_payload.get("action", "Buy")).strip()
+    qty = int(order_payload.get("quantity", 1))
+
+    if fmt == "traderspost":
+        if event == "CLOSE":
+            body = {"ticker": symbol, "action": "exit"}
+        else:
+            body = {"ticker": symbol, "action": action.lower(), "quantity": qty}
+        if secret:
+            body["secret"] = secret
+        return body
+
+    if fmt == "pickmytrade":
+        tv_spec = (target_cfg.get("tradovate", {}).get("account_spec") or "").strip()
+        acc_name = tv_spec or (target_cfg.get("name") or "").strip()
+        body = {
+            "symbol": symbol,
+            "data": "close" if event == "CLOSE" else action.lower(),
+            "quantity": qty,
+            "account_name": acc_name
+        }
+        if secret:
+            body["token"] = secret
+        return body
+
+    body = dict(order_payload)
+    if secret:
+        body["secret"] = secret
+    return body
+
+
+def discover_tradovate_account(env: str, token: str) -> dict:
+    """
+    Query Tradovate /v1/account/list using a Bearer token to automatically discover
+    the user's Account ID and Account Spec (e.g. Tradeify / Lucid / Topstep account).
+    """
+    clean_tok = (token or "").strip()
+    if not clean_tok:
+        raise ValueError("Tradovate access_token is required")
+    base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
+    req = urllib.request.Request(
+        f"{base_url}/account/list",
+        headers={"Authorization": f"Bearer {clean_tok}", "Accept": "application/json"},
+        method="GET"
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        accounts = json.loads(resp.read().decode("utf-8"))
+
+    if not isinstance(accounts, list) or len(accounts) == 0:
+        raise ValueError("No Tradovate accounts found for this token")
+
+    active_accs = [a for a in accounts if isinstance(a, dict) and a.get("active", True)]
+    chosen = active_accs[0] if active_accs else accounts[0]
+    return {
+        "account_id": int(chosen.get("id") or 0),
+        "account_spec": str(chosen.get("name") or "").strip(),
+        "accounts": [
+            {
+                "id": int(a.get("id") or 0),
+                "name": str(a.get("name") or "").strip(),
+                "active": bool(a.get("active", True))
+            }
+            for a in accounts if isinstance(a, dict)
+        ]
+    }
+
+
+def renew_tradovate_token(env: str, token: str) -> str:
+    """
+    Call Tradovate /v1/auth/renewaccesstoken to extend the life of an active Web/API Bearer token.
+    Returns the renewed token string (or existing token if endpoint returns empty/unchanged).
+    """
+    clean_tok = (token or "").strip()
+    if not clean_tok:
+        return ""
+    base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
+    req = urllib.request.Request(
+        f"{base_url}/auth/renewaccesstoken",
+        headers={"Authorization": f"Bearer {clean_tok}", "Accept": "application/json"},
+        method="GET"
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if isinstance(data, dict):
+        new_tok = (data.get("accessToken") or data.get("access_token") or "").strip()
+        if new_tok:
+            return new_tok
+    return clean_tok
 
 
 def execute_target_http(order_payload: dict, target_cfg: dict, log_fn):
@@ -289,9 +457,7 @@ def execute_target_http(order_payload: dict, target_cfg: dict, log_fn):
             if not url:
                 log_fn("FUTURES", f"[{target_name}] Simulated {order_payload['event']}: {order_payload['action']} {order_payload['quantity']} {order_payload['symbol']} (No webhook_url configured)")
                 return
-            body = dict(order_payload)
-            if target_cfg.get("webhook_secret"):
-                body["secret"] = target_cfg["webhook_secret"]
+            body = format_webhook_payload(order_payload, target_cfg)
             req = urllib.request.Request(
                 url,
                 data=json.dumps(body).encode("utf-8"),
@@ -308,9 +474,21 @@ def execute_target_http(order_payload: dict, target_cfg: dict, log_fn):
             if not token:
                 log_fn("FUTURES", f"[{target_name}] Simulated Tradovate {order_payload['event']}: {order_payload['action']} {order_payload['quantity']} {order_payload['symbol']} (No access_token configured)")
                 return
+            acc_spec = (tv.get("account_spec") or "").strip()
+            acc_id = int(tv.get("account_id") or 0)
+            if not acc_spec or acc_id <= 0:
+                try:
+                    disc = discover_tradovate_account(env, token)
+                    acc_spec = acc_spec or disc["account_spec"]
+                    acc_id = acc_id if acc_id > 0 else disc["account_id"]
+                    tv["account_spec"] = acc_spec
+                    tv["account_id"] = acc_id
+                    log_fn("FUTURES", f"[{target_name}] Auto-discovered Tradovate account: {acc_spec} (ID: {acc_id})")
+                except Exception as de:
+                    log_fn("WARN", f"[{target_name}] Tradovate account auto-discovery warning: {de}")
             tv_body = {
-                "accountSpec": tv.get("account_spec", ""),
-                "accountId": int(tv.get("account_id") or 0),
+                "accountSpec": acc_spec,
+                "accountId": acc_id,
                 "action": order_payload["action"],
                 "symbol": order_payload["symbol"],
                 "orderQty": int(order_payload["quantity"]),
@@ -393,37 +571,78 @@ def apply_master_webhook_signal(req_data: dict, process_snapshot_fn, log_fn) -> 
         if not symbol or action not in ("buy", "long", "sell", "short", "close", "exit", "flat", "partial"):
             return False, {"error": "Webhook payload must provide 'symbol' and valid 'action' (buy/sell/close/partial) or 'positions' array"}
 
-        ticket = int(req_data.get("ticket") or (abs(hash(symbol)) % 800000 + 200000))
+        explicit_ticket = req_data.get("ticket")
         old_snapshot = {int(k): dict(v) for k, v in external_master_positions.items()}
-        cur_map = {int(k): dict(v) for k, v in old_snapshot.items()}
 
-        if action in ("buy", "long", "sell", "short"):
-            pos_type = 0 if action in ("buy", "long") else 1
-            cur_map[ticket] = {
-                "ticket": ticket,
-                "symbol": symbol,
-                "type": pos_type,
-                "volume": qty,
-                "price": float(req_data.get("price", 0.0)),
-                "sl": float(req_data.get("sl", 0.0)),
-                "tp": float(req_data.get("tp", 0.0))
-            }
-        elif action == "partial":
-            if ticket in cur_map:
-                rem = max(0.0, float(cur_map[ticket]["volume"]) - qty)
-                if rem <= 1e-6:
+        if explicit_ticket is not None:
+            ticket = int(explicit_ticket)
+            cur_map = {int(k): dict(v) for k, v in old_snapshot.items()}
+
+            if action in ("buy", "long", "sell", "short"):
+                pos_type = 0 if action in ("buy", "long") else 1
+                cur_map[ticket] = {
+                    "ticket": ticket,
+                    "symbol": symbol,
+                    "type": pos_type,
+                    "volume": qty,
+                    "price": float(req_data.get("price", 0.0)),
+                    "sl": float(req_data.get("sl", 0.0)),
+                    "tp": float(req_data.get("tp", 0.0))
+                }
+            elif action == "partial":
+                if ticket in cur_map:
+                    rem = max(0.0, float(cur_map[ticket]["volume"]) - qty)
+                    if rem <= 1e-6:
+                        del cur_map[ticket]
+                    else:
+                        cur_map[ticket]["volume"] = rem
+            elif action in ("close", "exit", "flat"):
+                if ticket in cur_map:
                     del cur_map[ticket]
                 else:
-                    cur_map[ticket]["volume"] = rem
-        elif action in ("close", "exit", "flat"):
-            # Remove matching ticket or all tickets for that symbol
-            if ticket in cur_map:
-                del cur_map[ticket]
-            else:
-                for k in [k for k, v in cur_map.items() if v.get("symbol") == symbol]:
-                    del cur_map[k]
+                    for k in [k for k, v in cur_map.items() if v.get("symbol") == symbol]:
+                        del cur_map[k]
+            snapshot_list = list(cur_map.values())
+        else:
+            # Ticketless TradingView / Webhook mode: use net-position layer reconciliation per symbol
+            base_id = abs(hash(symbol)) % 80000 + 20000
+            other_positions = [dict(v) for v in old_snapshot.values() if v.get("symbol") != symbol]
+            sym_old_positions = {int(k): dict(v) for k, v in old_snapshot.items() if v.get("symbol") == symbol}
 
-        snapshot_list = list(cur_map.values())
+            cur_net = 0.0
+            for v in sym_old_positions.values():
+                v_vol = float(v.get("volume", 0.0))
+                cur_net += v_vol if int(v.get("type", 0)) == 0 else -v_vol
+
+            if req_data.get("net_pos") is not None or req_data.get("position_size") is not None:
+                raw_np = req_data.get("net_pos") if req_data.get("net_pos") is not None else req_data.get("position_size")
+                target_net = float(raw_np)
+            elif action in ("buy", "long"):
+                target_net = round(cur_net + qty, 6)
+            elif action in ("sell", "short"):
+                target_net = round(cur_net - qty, 6)
+            elif action == "partial":
+                if abs(cur_net) <= 1e-6:
+                    target_net = 0.0
+                else:
+                    rem_mag = max(0.0, round(abs(cur_net) - qty, 6))
+                    target_net = rem_mag if cur_net > 0 else -rem_mag
+            else:  # close / exit / flat
+                target_net = 0.0
+
+            net_items = []
+            if abs(target_net) > 1e-6:
+                net_items.append({
+                    "base_id": base_id,
+                    "symbol": symbol,
+                    "type": 0 if target_net > 0 else 1,
+                    "volume": round(abs(target_net), 6),
+                    "price": float(req_data.get("price", 0.0))
+                })
+            sym_layers = reconcile_net_position_layers(sym_old_positions, net_items)
+            snapshot_list = other_positions + sym_layers
+            ticket = sym_layers[-1]["ticket"] if sym_layers else (base_id * 100 + 1)
+
         new_positions, cmds = process_snapshot_fn(old_snapshot, snapshot_list)
         external_master_positions.clear()
         external_master_positions.update(new_positions)
@@ -449,19 +668,96 @@ def _resolve_tradovate_contract_name(base_url: str, token: str, contract_id: int
         return name
 
 
-def poll_tradovate_master_once(futures_cfg: dict, process_snapshot_fn, log_fn):
+def reconcile_net_position_layers(old_positions: dict, net_items: list) -> list:
+    """
+    Convert Tradovate Net Positions (netPos per contract) into MT5-compatible ticket layers.
+      - Initial open: creates Layer #1 ticket (e.g. base_id * 100 + 1 for Buy, +51 for Sell).
+      - Scale-In (netPos increases): keeps existing layer tickets intact and appends a new layer ticket
+        for the added contracts so FTMOReceiver.mq5 opens the additional volume without skipping!
+      - Partial Close (netPos decreases): reduces/closes from the newest layer ticket(s) (LIFO).
+      - Reverse / Flip (netPos changes sign): omits all opposite-side layer tickets (triggering CLOSE)
+        and creates a new layer ticket for the new direction (triggering OPEN).
+    """
+    snapshot = []
+    for item in net_items:
+        sym = item["symbol"]
+        pos_type = int(item["type"])
+        target_vol = float(item["volume"])
+        base_id = int(item.get("base_id") or (700000 + abs(hash(sym)) % 90000))
+        src_acc_id = int(item.get("source_account_id") or 0)
+        src_acc_spec = str(item.get("source_account_spec") or "").strip()
+
+        existing_layers = sorted(
+            [
+                dict(p) for p in old_positions.values()
+                if p.get("symbol") == sym and int(p.get("type", 0)) == pos_type
+            ],
+            key=lambda x: int(x["ticket"])
+        )
+        old_total = round(sum(float(p["volume"]) for p in existing_layers), 6)
+
+        if abs(target_vol - old_total) <= 1e-6 and existing_layers:
+            for layer in existing_layers:
+                layer["source_account_id"] = src_acc_id
+                layer["source_account_spec"] = src_acc_spec
+                snapshot.append(layer)
+        elif target_vol > old_total + 1e-6:
+            for layer in existing_layers:
+                layer["source_account_id"] = src_acc_id
+                layer["source_account_spec"] = src_acc_spec
+                snapshot.append(layer)
+            added_vol = round(target_vol - old_total, 6)
+            prefix = base_id * 100 + (51 if pos_type == 1 else 1)
+            next_ticket = max([int(p["ticket"]) for p in existing_layers], default=prefix - 1) + 1
+            snapshot.append({
+                "ticket": next_ticket,
+                "symbol": sym,
+                "type": pos_type,
+                "volume": added_vol,
+                "price": float(item.get("price", 0.0)),
+                "sl": 0.0,
+                "tp": 0.0,
+                "source_account_id": src_acc_id,
+                "source_account_spec": src_acc_spec
+            })
+        else:
+            # Partial close across existing layers (LIFO)
+            to_reduce = round(old_total - target_vol, 6)
+            kept_reversed = []
+            for layer in reversed(existing_layers):
+                l_vol = float(layer["volume"])
+                if to_reduce >= l_vol - 1e-6:
+                    to_reduce = round(max(0.0, to_reduce - l_vol), 6)
+                    # Layer fully closed -> omit from snapshot so process_position_snapshot sends CLOSE
+                elif to_reduce > 1e-6:
+                    layer["volume"] = round(l_vol - to_reduce, 6)
+                    layer["source_account_id"] = src_acc_id
+                    layer["source_account_spec"] = src_acc_spec
+                    to_reduce = 0.0
+                    kept_reversed.append(layer)
+                else:
+                    layer["source_account_id"] = src_acc_id
+                    layer["source_account_spec"] = src_acc_spec
+                    kept_reversed.append(layer)
+            snapshot.extend(reversed(kept_reversed))
+
+    return snapshot
+
+
+def poll_tradovate_master_once(futures_cfg: dict, process_snapshot_fn, log_fn) -> list:
     """Poll Tradovate Master account /position/list and feed open positions into process_snapshot_fn."""
     ms = (futures_cfg or {}).get("master_source", {})
     tv_m = ms.get("tradovate_master", {})
     if not tv_m.get("enabled"):
-        return
+        return []
     token = (tv_m.get("access_token") or "").strip()
     if not token:
-        return
+        return []
 
     env = tv_m.get("env", "demo")
     base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
     target_acc_id = int(tv_m.get("account_id") or 0)
+    target_acc_spec = str(tv_m.get("account_spec") or "").strip()
 
     req = urllib.request.Request(
         f"{base_url}/position/list",
@@ -472,13 +768,14 @@ def poll_tradovate_master_once(futures_cfg: dict, process_snapshot_fn, log_fn):
         positions_raw = json.loads(resp.read().decode("utf-8"))
 
     if not isinstance(positions_raw, list):
-        return
+        return []
 
-    snapshot = []
+    net_items = []
     for p in positions_raw:
         if not isinstance(p, dict):
             continue
-        if target_acc_id and int(p.get("accountId") or 0) != target_acc_id:
+        p_acc_id = int(p.get("accountId") or 0)
+        if target_acc_id and p_acc_id != target_acc_id:
             continue
         net_pos = int(p.get("netPos") or 0)
         if net_pos == 0:
@@ -489,23 +786,26 @@ def poll_tradovate_master_once(futures_cfg: dict, process_snapshot_fn, log_fn):
             sym = _resolve_tradovate_contract_name(base_url, token, contract_id)
         if not sym:
             continue
-        ticket_id = int(p.get("id") or (700000 + contract_id))
-        snapshot.append({
-            "ticket": ticket_id,
+        base_id = int(p.get("id") or (700000 + contract_id))
+        net_items.append({
+            "base_id": base_id,
             "symbol": sym,
             "type": 0 if net_pos > 0 else 1,
             "volume": float(abs(net_pos)),
             "price": float(p.get("netPrice") or 0.0),
-            "sl": 0.0,
-            "tp": 0.0
+            "source_account_id": p_acc_id or target_acc_id,
+            "source_account_spec": target_acc_spec
         })
 
     with external_master_lock:
         old_snapshot = dict(external_master_positions)
+        snapshot = reconcile_net_position_layers(old_snapshot, net_items)
         if old_snapshot != {item["ticket"]: item for item in snapshot}:
-            new_positions, _ = process_snapshot_fn(old_snapshot, snapshot)
+            new_positions, cmds = process_snapshot_fn(old_snapshot, snapshot)
             external_master_positions.clear()
             external_master_positions.update(new_positions)
+            return cmds
+    return []
 
 
 def start_tradovate_master_poller(load_cfg_fn, process_snapshot_fn, log_fn):
@@ -526,4 +826,82 @@ def start_tradovate_master_poller(load_cfg_fn, process_snapshot_fn, log_fn):
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
     return t
+
+
+def renew_all_tradovate_tokens_once(futures_cfg: dict, save_cfg_fn, log_fn) -> dict:
+    """
+    Renew all active Tradovate Bearer tokens (both Master poller and Target accounts)
+    via /v1/auth/renewaccesstoken so web session tokens do not expire after 80 minutes.
+    Also auto-populates missing account_spec / account_id via /v1/account/list.
+    """
+    cfg = normalize_futures_config(futures_cfg)
+    changed = False
+    renewed_count = 0
+
+    # 1. Renew Tradovate Master token if configured
+    tv_m = cfg.get("master_source", {}).get("tradovate_master", {})
+    m_tok = (tv_m.get("access_token") or "").strip()
+    if m_tok:
+        m_env = tv_m.get("env", "demo")
+        try:
+            new_tok = renew_tradovate_token(m_env, m_tok)
+            if new_tok and new_tok != m_tok:
+                tv_m["access_token"] = new_tok
+                m_tok = new_tok
+                changed = True
+            renewed_count += 1
+            if not tv_m.get("account_spec") or int(tv_m.get("account_id") or 0) <= 0:
+                disc = discover_tradovate_account(m_env, m_tok)
+                tv_m["account_spec"] = tv_m.get("account_spec") or disc["account_spec"]
+                tv_m["account_id"] = int(tv_m.get("account_id") or 0) or disc["account_id"]
+                changed = True
+        except Exception as e:
+            log_fn("WARN", f"Tradovate Master token renewal warning: {e}")
+
+    # 2. Renew Tradovate Target tokens
+    for t in cfg.get("targets", []):
+        tv = t.get("tradovate", {})
+        t_tok = (tv.get("access_token") or "").strip()
+        if not t_tok:
+            continue
+        t_env = tv.get("env", "demo")
+        try:
+            new_tok = renew_tradovate_token(t_env, t_tok)
+            if new_tok and new_tok != t_tok:
+                tv["access_token"] = new_tok
+                t_tok = new_tok
+                changed = True
+            renewed_count += 1
+            if not tv.get("account_spec") or int(tv.get("account_id") or 0) <= 0:
+                disc = discover_tradovate_account(t_env, t_tok)
+                tv["account_spec"] = tv.get("account_spec") or disc["account_spec"]
+                tv["account_id"] = int(tv.get("account_id") or 0) or disc["account_id"]
+                changed = True
+        except Exception as e:
+            log_fn("WARN", f"[{t.get('name', 'Target')}] Tradovate token renewal warning: {e}")
+
+    if changed and save_cfg_fn:
+        if cfg.get("targets"):
+            cfg["tradovate"] = dict(cfg["targets"][0].get("tradovate", {}))
+        save_cfg_fn(cfg)
+        log_fn("FUTURES", f"Auto-renewed/synced Tradovate session token(s) ({renewed_count} active)")
+
+    return {"changed": changed, "renewed_count": renewed_count, "config": cfg}
+
+
+def start_tradovate_token_renewer(load_cfg_fn, save_cfg_fn, log_fn, interval_sec: int = 2100):
+    """Background daemon that renews Tradovate Bearer tokens every 35 minutes (2100s)."""
+    def _loop():
+        while True:
+            time.sleep(max(60, interval_sec))
+            try:
+                cfg = load_cfg_fn()
+                renew_all_tradovate_tokens_once(cfg, save_cfg_fn, log_fn)
+            except Exception as e:
+                log_fn("WARN", f"Tradovate token auto-renewer warning: {e}")
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    return t
+
 
