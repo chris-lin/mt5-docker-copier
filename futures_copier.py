@@ -388,14 +388,49 @@ def format_webhook_payload(order_payload: dict, target_cfg: dict) -> dict:
     return body
 
 
-def discover_tradovate_account(env: str, token: str) -> dict:
+def sanitize_tradovate_token(raw_input: str) -> str:
     """
-    Query Tradovate /v1/account/list using a Bearer token to automatically discover
-    the user's Account ID and Account Spec (e.g. Tradeify / Lucid / Topstep account).
+    Clean a user-pasted Tradovate token string:
+      - If a full JSON object (e.g. from localStorage 'api_authenticator_state') is pasted,
+        extract 'token' or 'accessToken' (or nested userData.accessToken).
+      - Strip 'Authorization:', 'Bearer ', surrounding quotes ('"' or "'"), and whitespace.
     """
-    clean_tok = (token or "").strip()
-    if not clean_tok:
-        raise ValueError("Tradovate access_token is required")
+    s = (raw_input or "").strip()
+    if not s:
+        return ""
+    if s.startswith("{") and s.endswith("}"):
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                extracted = (
+                    obj.get("token")
+                    or obj.get("accessToken")
+                    or obj.get("access_token")
+                    or (obj.get("userData", {}) if isinstance(obj.get("userData"), dict) else {}).get("accessToken")
+                    or (obj.get("userData", {}) if isinstance(obj.get("userData"), dict) else {}).get("token")
+                )
+                if extracted and isinstance(extracted, str):
+                    s = extracted.strip()
+        except Exception:
+            pass
+    # Strip surrounding quotes
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        s = s[1:-1].strip()
+    # Strip optional 'Authorization:' or 'Bearer ' prefixes (even if repeated)
+    while True:
+        lower = s.lower()
+        if lower.startswith("authorization:"):
+            s = s[len("authorization:"):].strip()
+        elif lower.startswith("bearer "):
+            s = s[len("bearer "):].strip()
+        elif (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+            s = s[1:-1].strip()
+        else:
+            break
+    return s
+
+
+def _fetch_tradovate_accounts_for_env(env: str, clean_tok: str) -> list:
     base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
     req = urllib.request.Request(
         f"{base_url}/account/list",
@@ -403,7 +438,46 @@ def discover_tradovate_account(env: str, token: str) -> dict:
         method="GET"
     )
     with urllib.request.urlopen(req, timeout=8) as resp:
-        accounts = json.loads(resp.read().decode("utf-8"))
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def discover_tradovate_account(env: str, token: str) -> dict:
+    """
+    Query Tradovate /v1/account/list using a Bearer token to automatically discover
+    the user's Account ID and Account Spec (e.g. Tradeify / Lucid / Topstep account).
+    Automatically sanitizes the token and falls back between 'demo' and 'live' on HTTP 401.
+    """
+    clean_tok = sanitize_tradovate_token(token)
+    if not clean_tok:
+        raise ValueError("Tradovate access_token is required")
+
+    primary_env = "live" if env == "live" else "demo"
+    alt_env = "demo" if primary_env == "live" else "live"
+    resolved_env = primary_env
+
+    try:
+        accounts = _fetch_tradovate_accounts_for_env(primary_env, clean_tok)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            try:
+                accounts = _fetch_tradovate_accounts_for_env(alt_env, clean_tok)
+                resolved_env = alt_env
+            except Exception:
+                raise ValueError(
+                    f"HTTP Error {e.code}: Unauthorized (Token expired or invalid on both Demo & Live servers — please refresh trader.tradovate.com and copy the active token)"
+                )
+        else:
+            raise
+
+    if not isinstance(accounts, list) or len(accounts) == 0:
+        # If primary returned 200 but empty list, also check alt_env just in case
+        try:
+            alt_accounts = _fetch_tradovate_accounts_for_env(alt_env, clean_tok)
+            if isinstance(alt_accounts, list) and len(alt_accounts) > 0:
+                accounts = alt_accounts
+                resolved_env = alt_env
+        except Exception:
+            pass
 
     if not isinstance(accounts, list) or len(accounts) == 0:
         raise ValueError("No Tradovate accounts found for this token")
@@ -413,6 +487,8 @@ def discover_tradovate_account(env: str, token: str) -> dict:
     return {
         "account_id": int(chosen.get("id") or 0),
         "account_spec": str(chosen.get("name") or "").strip(),
+        "resolved_env": resolved_env,
+        "clean_token": clean_tok,
         "accounts": [
             {
                 "id": int(a.get("id") or 0),
@@ -429,7 +505,7 @@ def renew_tradovate_token(env: str, token: str) -> str:
     Call Tradovate /v1/auth/renewaccesstoken to extend the life of an active Web/API Bearer token.
     Returns the renewed token string (or existing token if endpoint returns empty/unchanged).
     """
-    clean_tok = (token or "").strip()
+    clean_tok = sanitize_tradovate_token(token)
     if not clean_tok:
         return ""
     base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
@@ -441,7 +517,7 @@ def renew_tradovate_token(env: str, token: str) -> str:
     with urllib.request.urlopen(req, timeout=8) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     if isinstance(data, dict):
-        new_tok = (data.get("accessToken") or data.get("access_token") or "").strip()
+        new_tok = sanitize_tradovate_token(data.get("accessToken") or data.get("access_token") or "")
         if new_tok:
             return new_tok
     return clean_tok
@@ -469,8 +545,7 @@ def execute_target_http(order_payload: dict, target_cfg: dict, log_fn):
         else:
             tv = target_cfg.get("tradovate", {})
             env = tv.get("env", "demo")
-            base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
-            token = (tv.get("access_token") or "").strip()
+            token = sanitize_tradovate_token(tv.get("access_token") or "")
             if not token:
                 log_fn("FUTURES", f"[{target_name}] Simulated Tradovate {order_payload['event']}: {order_payload['action']} {order_payload['quantity']} {order_payload['symbol']} (No access_token configured)")
                 return
@@ -481,11 +556,15 @@ def execute_target_http(order_payload: dict, target_cfg: dict, log_fn):
                     disc = discover_tradovate_account(env, token)
                     acc_spec = acc_spec or disc["account_spec"]
                     acc_id = acc_id if acc_id > 0 else disc["account_id"]
+                    env = disc.get("resolved_env") or env
+                    tv["env"] = env
                     tv["account_spec"] = acc_spec
                     tv["account_id"] = acc_id
-                    log_fn("FUTURES", f"[{target_name}] Auto-discovered Tradovate account: {acc_spec} (ID: {acc_id})")
+                    tv["access_token"] = token
+                    log_fn("FUTURES", f"[{target_name}] Auto-discovered Tradovate account: {acc_spec} (ID: {acc_id}, env: {env})")
                 except Exception as de:
                     log_fn("WARN", f"[{target_name}] Tradovate account auto-discovery warning: {de}")
+            base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
             tv_body = {
                 "accountSpec": acc_spec,
                 "accountId": acc_id,
@@ -750,7 +829,7 @@ def poll_tradovate_master_once(futures_cfg: dict, process_snapshot_fn, log_fn) -
     tv_m = ms.get("tradovate_master", {})
     if not tv_m.get("enabled"):
         return []
-    token = (tv_m.get("access_token") or "").strip()
+    token = sanitize_tradovate_token(tv_m.get("access_token") or "")
     if not token:
         return []
 

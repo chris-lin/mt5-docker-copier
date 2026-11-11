@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v3.1] - 2026-11-11
+
+### Added
+- **$0-Monthly-Fee Direct Tradovate Integration & Auto-Discovery (`futures_copier.py`, `copier_hub.py`)**:
+  - Added `discover_tradovate_account()` and `POST /api/tradovate-sync` to automatically query Tradovate `/v1/account/list` using a Bearer token and populate `Account Spec` and numeric `Account ID` without manual lookup.
+  - Added `start_tradovate_token_renewer()` and `renew_all_tradovate_tokens_once()` to automatically extend active Tradovate Bearer tokens every 35 minutes via `/v1/auth/renewaccesstoken` and persist updated tokens to `.config/futures_copier.json`.
+  - Added `sanitize_tradovate_token()` and automatic **Demo <-> Live environment fallback** (`demo.tradovateapi.com` <-> `live.tradovateapi.com`) on `HTTP 401/403` responses, gracefully handling pasted `Bearer ` prefixes, quotes, or full `api_authenticator_state` JSON objects from browser storage.
+  - Added a built-in **Tradeify 50K (Tradovate)** target preset and `format_webhook_payload()` adapters supporting `standard`, `traderspost`, and `pickmytrade` JSON schemas.
+- **1-Click Browser Token Sync Bookmarklet (`web/index.html`, `web/app.js`)**:
+  - Added the draggable **`🔖 ⚡ Sync Tradovate to Copier`** bookmarklet (`initTradovateBookmarklet()`), scanning `localStorage` and `sessionStorage` (`api_authenticator_state`) on `trader.tradovate.com` to sync active Bearer tokens to both `Tradovate Master` and `Targets` in one click.
+- **Tradovate Net-Position (`netPos`) Layering & Bidirectional 4-Way Copying (`futures_copier.py`, `copier_hub.py`)**:
+  - Added `reconcile_net_position_layers()` to convert Tradovate and ticketless TradingView net positions (`netPos`) into MT5-compatible ticket layers, enabling **Scale-In (additions)**, **LIFO Partial Closes**, and **1-Click Reversals (close-before-open)** without recompiling `FTMOReceiver.mq5`.
+  - Added **Anti-Self-Loop Guard (`_is_same_tradovate_account()`)** in `process_position_snapshot()` to prevent routing orders back to the same Tradovate account that originated a Master trade when both `Master Parallel Futures Switch` and `Tradovate Master Auto-Poller` are enabled.
+- **Wildcard Futures Contract Month Matching (`futures_copier.py`)**:
+  - Added `extract_futures_root()` and `DEFAULT_FUTURES_ROOT_MAP` (`MGC`, `GC`, `MNQ`, `NQ`, `MES`, `ES`, `MYM`, `YM`, `MBT`, `BTC`), automatically matching any futures contract expiration month or continuous ticker (`MGCM6`, `MGCZ6`, `MGC1!`, `MNQM6`, `MNQ1!`, etc.) to its MT5 CFD symbol (`XAUUSD`, `US100.cash`, `US500.cash`, `US30.cash`, `BTCUSD`).
+
+### Changed & Fixed
+- **Futures-to-MT5 Lot Sizing Isolation (`copier_hub.py`)**:
+  - Fixed lot rule evaluation priority in `process_position_snapshot()` when copying from a Futures Master (`is_rev == True`) to an MT5 Slave so that integer futures contract quantities always use `reverse_map` `lot_per_contract` sizing unless an explicit rule exists for the source futures ticker itself, preventing MT5 CFD target-symbol rules (e.g. `XAUUSD` or `US100.cash`) from treating contract counts as CFD lots.
+- **Close-Before-Open Ordering on Reversals (`copier_hub.py`)**:
+  - Reordered `process_position_snapshot()` to dispatch `CLOSE` commands (including direction flips) before `OPEN` commands within the same snapshot cycle, freeing margin before opening opposite positions.
+- **SSH Disconnection Immunity (`copier_hub.py`)**:
+  - Fixed `[Errno 5] Input/output error` (`EIO`) in `log_event()` when the launching SSH session disconnects by recording in-memory `event_logs` first and catching `OSError` on detached `stdout` writes.
+- **Clean `.config/` Runtime & `config_templates/` Directory Layout**:
+  - Centralized tracked example templates under `config_templates/` and runtime configuration files under `.config/` (`symbol_map.json`, `lot_rules.json`, `presets.json`, `accounts.json`, `futures_copier.json`, `web_auth.json`).
+
+---
+
 ## [v3.0] - 2026-10-21
 
 ### Added

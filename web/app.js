@@ -997,9 +997,12 @@ let symbolsData = {};
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ env, access_token: token, target_id: targetId, apply_to_target: false })
       });
+      if (res.env) {
+        document.getElementById('ft-modal-tv-env').value = res.env;
+      }
       document.getElementById('ft-modal-tv-spec').value = res.account_spec || '';
       document.getElementById('ft-modal-tv-acc-id').value = res.account_id || '';
-      showToast(`Verified! Found Account: ${res.account_spec} (ID: ${res.account_id})`);
+      showToast(`Verified (${(res.env || env).toUpperCase()})! Found Account: ${res.account_spec} (ID: ${res.account_id})`);
     } catch (e) {
       // handled by fetchJSON
     }
@@ -1015,12 +1018,15 @@ let symbolsData = {};
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ env, access_token: token, apply_to_master: true })
       });
+      if (res.env) {
+        document.getElementById('tv-master-env').value = res.env;
+      }
       document.getElementById('tv-master-acc-id').value = res.account_id || '';
       if (res.futures) {
         lucidData = res.futures;
         renderLucid();
       }
-      showToast(`Master Synced! Account: ${res.account_spec} (ID: ${res.account_id})`);
+      showToast(`Master Synced (${(res.env || env).toUpperCase()})! Account: ${res.account_spec} (ID: ${res.account_id})`);
     } catch (e) {
       // handled by fetchJSON
     }
@@ -1030,7 +1036,7 @@ let symbolsData = {};
     const link = document.getElementById('tv-bookmarklet-link');
     if (!link) return;
     const hubOrigin = window.location.origin;
-    const code = `(function(){try{var t='';for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i),v=localStorage.getItem(k)||'';if(v.indexOf('accessToken')>-1||k.indexOf('authenticator')>-1||k.indexOf('sso')>-1){try{var o=JSON.parse(v);t=o.accessToken||o.token||(o.userData&&o.userData.accessToken)||t;}catch(e){}}if(!t&&v.split('.').length===3&&v.length>80)t=v.replace(/^"|"$/g,'');}if(!t)t=prompt('Paste Tradovate Bearer Token:');if(t)window.open('${hubOrigin}/?sync_tv_token='+encodeURIComponent(t.trim()),'_blank');}catch(e){alert('Sync error: '+e);}})();`;
+    const code = `(function(){try{var t='',stores=[window.localStorage,window.sessionStorage];for(var s=0;s<stores.length;s++){var st=stores[s];if(!st)continue;var authVal=st.getItem('api_authenticator_state');if(authVal){try{var ao=JSON.parse(authVal);t=ao.token||ao.accessToken||(ao.userData&&(ao.userData.token||ao.userData.accessToken))||'';}catch(e){}}if(t)break;for(var i=0;i<st.length;i++){var k=st.key(i)||'',v=st.getItem(k)||'';if(k.toLowerCase().indexOf('md')>-1)continue;if(v.indexOf('accessToken')>-1||k.indexOf('authenticator')>-1||k.indexOf('tradovate')>-1){try{var o=JSON.parse(v);t=o.token||o.accessToken||(o.userData&&(o.userData.token||o.userData.accessToken))||t;}catch(e){}}}}if(!t)t=prompt('Paste Tradovate Bearer Token (or api_authenticator_state JSON):');if(t)window.open('${hubOrigin}/?sync_tv_token='+encodeURIComponent(t.trim()),'_blank');}catch(e){alert('Sync error: '+e);}})();`;
     link.setAttribute('href', 'javascript:' + code);
   }
 

@@ -1018,6 +1018,36 @@ class TestWebAPI(unittest.TestCase):
             self.assertEqual(len(r4["commands_sent"]), 2)
             self.assertTrue(all(c.startswith("CLOSE;XAUUSD;") for c in r4["commands_sent"]))
 
+    def test_tradovate_token_sanitizer_and_env_fallback(self):
+        import futures_copier
+        from unittest.mock import patch, MagicMock
+
+        # 1. Verify sanitize_tradovate_token handles Bearer prefix, quotes, and full JSON objects
+        self.assertEqual(futures_copier.sanitize_tradovate_token('  "Bearer eyJhbGciOi123" '), "eyJhbGciOi123")
+        self.assertEqual(futures_copier.sanitize_tradovate_token("Authorization: Bearer tok_abc_999"), "tok_abc_999")
+        self.assertEqual(
+            futures_copier.sanitize_tradovate_token('{"token": "tok_from_storage_777", "expirationTime": "2026-11-11"}'),
+            "tok_from_storage_777"
+        )
+
+        # 2. Verify discover_tradovate_account auto-switches from 'demo' to 'live' when 'demo' returns HTTP 401
+        def fake_401_on_demo(req, timeout=8):
+            url = req.full_url
+            if "demo.tradovateapi.com" in url:
+                raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, None)
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__.return_value = resp
+            resp.read.return_value = json.dumps([{"id": 991122, "name": "LIVE_PROP_50K", "active": True}]).encode("utf-8")
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=fake_401_on_demo):
+            disc = futures_copier.discover_tradovate_account("demo", '{"token": "Bearer live_tok_555"}')
+            self.assertEqual(disc["resolved_env"], "live")
+            self.assertEqual(disc["clean_token"], "live_tok_555")
+            self.assertEqual(disc["account_id"], 991122)
+            self.assertEqual(disc["account_spec"], "LIVE_PROP_50K")
+
 if __name__ == "__main__":
     unittest.main()
 

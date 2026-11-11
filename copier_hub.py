@@ -1527,12 +1527,14 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             acc_id = disc["account_id"]
             acc_spec = disc["account_spec"]
+            resolved_env = disc.get("resolved_env") or env
+            clean_tok = disc.get("clean_token") or raw_token
             persisted = False
 
             if apply_to_master:
                 tv_m = cur_cfg.setdefault("master_source", {}).setdefault("tradovate_master", {})
-                tv_m["env"] = env
-                tv_m["access_token"] = raw_token
+                tv_m["env"] = resolved_env
+                tv_m["access_token"] = clean_tok
                 tv_m["account_id"] = acc_id
                 tv_m["account_spec"] = acc_spec
                 tv_m["enabled"] = True
@@ -1549,8 +1551,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 if t_obj:
                     t_obj["mode"] = "tradovate"
                     tv_obj = t_obj.setdefault("tradovate", {})
-                    tv_obj["env"] = env
-                    tv_obj["access_token"] = raw_token
+                    tv_obj["env"] = resolved_env
+                    tv_obj["access_token"] = clean_tok
                     tv_obj["account_id"] = acc_id
                     tv_obj["account_spec"] = acc_spec
                     persisted = True
@@ -1559,12 +1561,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 if cur_cfg.get("targets"):
                     cur_cfg["tradovate"] = dict(cur_cfg["targets"][0].get("tradovate", {}))
                 save_atomic_json(LUCID_FILE, cur_cfg, "futures_copier")
-                log_event("FUTURES", f"Synced Tradovate account '{acc_spec}' (ID: {acc_id}, env={env})")
+                log_event("FUTURES", f"Synced Tradovate account '{acc_spec}' (ID: {acc_id}, env={resolved_env})")
 
             masked = mask_futures_data(cur_cfg)
             self.send_json(200, {
                 "success": True,
-                "env": env,
+                "env": resolved_env,
                 "account_id": acc_id,
                 "account_spec": acc_spec,
                 "accounts": disc["accounts"],
