@@ -1537,7 +1537,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 tv_m["access_token"] = clean_tok
                 tv_m["account_id"] = acc_id
                 tv_m["account_spec"] = acc_spec
-                tv_m["enabled"] = True
+                tv_m.setdefault("enabled", False)
                 persisted = True
 
             if apply_to_target or target_id:
