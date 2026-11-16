@@ -77,7 +77,6 @@
     "webhook_secret": "",
     "tradovate_master": {
       "enabled": false,
-      "poll_interval_sec": 1.0,
       "env": "demo",
       "account_spec": "",
       "account_id": 0,

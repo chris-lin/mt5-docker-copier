@@ -756,7 +756,6 @@ class TestWebAPI(unittest.TestCase):
         futures_cfg["master_source"]["tradovate_master"] = {
             "enabled": True,
             "env": "demo",
-            "poll_interval_sec": 1.0,
             "account_id": 778899,
             "account_spec": "TDFY50K_SIM",
             "access_token": "tok_master_778899"
@@ -802,85 +801,72 @@ class TestWebAPI(unittest.TestCase):
         }
         copier_hub.save_atomic_json(copier_hub.LUCID_FILE, futures_cfg, "futures_copier")
 
-        current_net_pos = [0]
+        def make_ws_props_frame(net_pos):
+            return 'a' + json.dumps([{
+                "e": "props",
+                "d": {
+                    "entityType": "position",
+                    "eventType": "Updated",
+                    "entity": {"id": 50001, "accountId": 778899, "contractId": 301, "symbol": "MGCM6", "netPos": net_pos, "netPrice": 2950.5}
+                }
+            }])
 
-        def fake_tradovate_urlopen(req, timeout=6):
-            url = req.full_url
-            resp_mock = MagicMock()
-            resp_mock.status = 200
-            resp_mock.__enter__.return_value = resp_mock
-            if "/position/list" in url:
-                if current_net_pos[0] == 0:
-                    pos_list = [{"id": 50001, "accountId": 778899, "contractId": 301, "netPos": 0, "netPrice": 0.0}]
-                else:
-                    pos_list = [{"id": 50001, "accountId": 778899, "contractId": 301, "netPos": current_net_pos[0], "netPrice": 2950.5}]
-                resp_mock.read.return_value = json.dumps(pos_list).encode("utf-8")
-            elif "/contract/item?id=301" in url:
-                resp_mock.read.return_value = json.dumps({"id": 301, "name": "MGCM6"}).encode("utf-8")
-            else:
-                resp_mock.read.return_value = json.dumps({}).encode("utf-8")
-            return resp_mock
+        # Step 1: Open Long 1 MGCM6 on Tradovate WebSocket (netPos = +1)
+        cmds_1 = futures_copier.process_tradovate_ws_frame(
+            make_ws_props_frame(1),
+            futures_cfg,
+            copier_hub.process_position_snapshot,
+            copier_hub.log_event
+        )
+        self.assertEqual(cmds_1, ["OPEN;XAUUSD;0;0.1;0;0;5000101"])
 
-        with patch("urllib.request.urlopen", side_effect=fake_tradovate_urlopen):
-            # Step 1: Open Long 1 MGCM6 on Tradovate (netPos = +1)
-            current_net_pos[0] = 1
-            cmds_1 = futures_copier.poll_tradovate_master_once(
-                futures_cfg,
-                copier_hub.process_position_snapshot,
-                copier_hub.log_event
-            )
-            self.assertEqual(cmds_1, ["OPEN;XAUUSD;0;0.1;0;0;5000101"])
+        # Check Anti-Self-Loop Guard: ONLY lucid_second received the order; tradeify_self was skipped!
+        with copier_hub.lucid_lock:
+            dispatched_1 = list(copier_hub.futures_dispatched_orders)
+        self.assertEqual(len(dispatched_1), 1)
+        self.assertEqual(dispatched_1[0]["target_id"], "lucid_second")
+        self.assertEqual(dispatched_1[0]["event"], "OPEN")
+        self.assertEqual(dispatched_1[0]["quantity"], 1)
 
-            # Check Anti-Self-Loop Guard: ONLY lucid_second received the order; tradeify_self was skipped!
-            with copier_hub.lucid_lock:
-                dispatched_1 = list(copier_hub.futures_dispatched_orders)
-            self.assertEqual(len(dispatched_1), 1)
-            self.assertEqual(dispatched_1[0]["target_id"], "lucid_second")
-            self.assertEqual(dispatched_1[0]["event"], "OPEN")
-            self.assertEqual(dispatched_1[0]["quantity"], 1)
+        # Step 2: Scale-In Long +2 MGCM6 on Tradovate WebSocket (netPos: 1 -> 3)
+        cmds_2 = futures_copier.process_tradovate_ws_frame(
+            make_ws_props_frame(3),
+            futures_cfg,
+            copier_hub.process_position_snapshot,
+            copier_hub.log_event
+        )
+        self.assertEqual(cmds_2, ["OPEN;XAUUSD;0;0.2;0;0;5000102"])
 
-            # Step 2: Scale-In Long +2 MGCM6 on Tradovate (netPos: 1 -> 3)
-            # Generates new layer ticket #5000102 for the +2 contract addition so FTMOReceiver.mq5 opens +0.2 lot!
-            current_net_pos[0] = 3
-            cmds_2 = futures_copier.poll_tradovate_master_once(
-                futures_cfg,
-                copier_hub.process_position_snapshot,
-                copier_hub.log_event
-            )
-            self.assertEqual(cmds_2, ["OPEN;XAUUSD;0;0.2;0;0;5000102"])
+        # Step 3: Partial Close 1 MGCM6 on Tradovate WebSocket (netPos: 3 -> 2)
+        cmds_3 = futures_copier.process_tradovate_ws_frame(
+            make_ws_props_frame(2),
+            futures_cfg,
+            copier_hub.process_position_snapshot,
+            copier_hub.log_event
+        )
+        self.assertEqual(cmds_3, ["PARTIAL;XAUUSD;0.5;5000102"])
 
-            # Step 3: Partial Close 1 MGCM6 on Tradovate (netPos: 3 -> 2)
-            # Reduces LIFO layer ticket #5000102 from 2 -> 1 (50% partial close on #5000102)
-            current_net_pos[0] = 2
-            cmds_3 = futures_copier.poll_tradovate_master_once(
-                futures_cfg,
-                copier_hub.process_position_snapshot,
-                copier_hub.log_event
-            )
-            self.assertEqual(cmds_3, ["PARTIAL;XAUUSD;0.5;5000102"])
+        # Step 4: Reverse / Flip directly from Long 2 to Short 1 MGCM6 (netPos: +2 -> -1)
+        cmds_4 = futures_copier.process_tradovate_ws_frame(
+            make_ws_props_frame(-1),
+            futures_cfg,
+            copier_hub.process_position_snapshot,
+            copier_hub.log_event
+        )
+        self.assertEqual(cmds_4, [
+            "CLOSE;XAUUSD;5000101",
+            "CLOSE;XAUUSD;5000102",
+            "OPEN;XAUUSD;1;0.1;0;0;5000151"
+        ])
 
-            # Step 4: Reverse / Flip directly from Long 2 to Short 1 MGCM6 (netPos: +2 -> -1)
-            # Closes BOTH Long layer tickets (#5000101 and #5000102) FIRST, then opens Short 0.1 lot (#5000151)!
-            current_net_pos[0] = -1
-            cmds_4 = futures_copier.poll_tradovate_master_once(
-                futures_cfg,
-                copier_hub.process_position_snapshot,
-                copier_hub.log_event
-            )
-            self.assertEqual(cmds_4, [
-                "CLOSE;XAUUSD;5000101",
-                "CLOSE;XAUUSD;5000102",
-                "OPEN;XAUUSD;1;0.1;0;0;5000151"
-            ])
-
-            # Step 5: Flatten Short 1 MGCM6 (netPos: -1 -> 0)
-            current_net_pos[0] = 0
-            cmds_5 = futures_copier.poll_tradovate_master_once(
-                futures_cfg,
-                copier_hub.process_position_snapshot,
-                copier_hub.log_event
-            )
-            self.assertEqual(cmds_5, ["CLOSE;XAUUSD;5000151"])
+        # Step 5: Flatten Short 1 MGCM6 (netPos: -1 -> 0)
+        cmds_5 = futures_copier.process_tradovate_ws_frame(
+            make_ws_props_frame(0),
+            futures_cfg,
+            copier_hub.process_position_snapshot,
+            copier_hub.log_event
+        )
+        self.assertEqual(cmds_5, ["CLOSE;XAUUSD;5000151"])
 
     def test_all_four_copying_routes_end_to_end(self):
         import futures_copier
@@ -963,11 +949,23 @@ class TestWebAPI(unittest.TestCase):
             self.assertEqual(fut_dispatched[1]["symbol"], "MNQZ6")
             self.assertEqual(fut_dispatched[1]["quantity"], 3)  # 0.30 * 10.0 = 3 contracts
 
-            # ROUTE 3 (Tradovate Master -> MT5 FTMO)
+            # ROUTE 3 (Tradovate Master WebSocket Stream -> MT5 FTMO)
             # Even though XAUUSD has fixed_lot=2.0 and US100.cash has multiplier=2.0 for CFD copying,
             # Futures Master 1 MGCM6 MUST map to 0.10 lot XAUUSD, and 3 MNQM6 MUST map to 0.30 lot US100.cash!
             futures_copier.reset_futures_runtime_state()
-            tv_cmds = futures_copier.poll_tradovate_master_once(
+            ws_sync_frame = 'a' + json.dumps([{
+                "i": 2,
+                "s": 200,
+                "d": {
+                    "contracts": [{"id": 301, "name": "MGCM6"}, {"id": 302, "name": "MNQM6"}],
+                    "positions": [
+                        {"id": 6001, "accountId": 778899, "contractId": 301, "netPos": 1, "netPrice": 2950.0},
+                        {"id": 6002, "accountId": 778899, "contractId": 302, "netPos": -3, "netPrice": 20100.0}
+                    ]
+                }
+            }])
+            tv_cmds = futures_copier.process_tradovate_ws_frame(
+                ws_sync_frame,
                 f_cfg,
                 copier_hub.process_position_snapshot,
                 copier_hub.log_event
@@ -1047,6 +1045,83 @@ class TestWebAPI(unittest.TestCase):
             self.assertEqual(disc["clean_token"], "live_tok_555")
             self.assertEqual(disc["account_id"], 991122)
             self.assertEqual(disc["account_spec"], "LIVE_PROP_50K")
+
+    def test_tradovate_websocket_realtime_position_props_stream(self):
+        import futures_copier
+
+        futures_copier.reset_futures_runtime_state()
+        f_cfg = futures_copier.get_default_futures_config()
+        f_cfg["enabled"] = False  # FTMO MT5 Slave only
+        f_cfg["master_source"]["tradovate_master"] = {
+            "enabled": True,
+            "env": "demo",
+            "account_id": 778899,
+            "account_spec": "TDFY50K_SIM",
+            "access_token": "tok_ws_123"
+        }
+        copier_hub.save_atomic_json(copier_hub.LUCID_FILE, f_cfg, "futures_copier")
+
+        # 1. Simulate initial user/syncrequest response frame with contract metadata and 1 open MGCM6 position
+        sync_frame = 'a' + json.dumps([{
+            "i": 2,
+            "s": 200,
+            "d": {
+                "contracts": [{"id": 501, "name": "MGCM6"}, {"id": 502, "name": "MNQM6"}],
+                "positions": [
+                    {"id": 90001, "accountId": 778899, "contractId": 501, "netPos": 1, "netPrice": 2955.0}
+                ]
+            }
+        }])
+        cmds_init = futures_copier.process_tradovate_ws_frame(
+            sync_frame, f_cfg, copier_hub.process_position_snapshot, copier_hub.log_event
+        )
+        self.assertEqual(cmds_init, ["OPEN;XAUUSD;0;0.1;0;0;9000101"])
+
+        # 2. Simulate real-time WebSocket 'props' event: Scale-In to netPos = 3 on MGCM6
+        props_scale_in = 'a' + json.dumps([{
+            "e": "props",
+            "d": {
+                "entityType": "position",
+                "eventType": "Updated",
+                "entity": {"id": 90001, "accountId": 778899, "contractId": 501, "netPos": 3, "netPrice": 2958.0}
+            }
+        }])
+        cmds_scale = futures_copier.process_tradovate_ws_frame(
+            props_scale_in, f_cfg, copier_hub.process_position_snapshot, copier_hub.log_event
+        )
+        self.assertEqual(cmds_scale, ["OPEN;XAUUSD;0;0.2;0;0;9000102"])
+
+        # 3. Simulate real-time WebSocket 'props' event: 1-Click Reverse to Short 1 MGCM6 (netPos = -1)
+        props_reverse = 'a' + json.dumps([{
+            "e": "props",
+            "d": {
+                "entityType": "position",
+                "eventType": "Updated",
+                "entity": {"id": 90001, "accountId": 778899, "contractId": 501, "netPos": -1, "netPrice": 2952.0}
+            }
+        }])
+        cmds_rev = futures_copier.process_tradovate_ws_frame(
+            props_reverse, f_cfg, copier_hub.process_position_snapshot, copier_hub.log_event
+        )
+        self.assertEqual(cmds_rev, [
+            "CLOSE;XAUUSD;9000101",
+            "CLOSE;XAUUSD;9000102",
+            "OPEN;XAUUSD;1;0.1;0;0;9000151"
+        ])
+
+        # 4. Simulate real-time WebSocket 'props' event: Flatten position (netPos = 0)
+        props_flat = 'a' + json.dumps([{
+            "e": "props",
+            "d": {
+                "entityType": "position",
+                "eventType": "Updated",
+                "entity": {"id": 90001, "accountId": 778899, "contractId": 501, "netPos": 0, "netPrice": 0.0}
+            }
+        }])
+        cmds_flat = futures_copier.process_tradovate_ws_frame(
+            props_flat, f_cfg, copier_hub.process_position_snapshot, copier_hub.log_event
+        )
+        self.assertEqual(cmds_flat, ["CLOSE;XAUUSD;9000151"])
 
 if __name__ == "__main__":
     unittest.main()

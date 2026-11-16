@@ -300,10 +300,10 @@
 
         <div class="grid-3">
           <div class="input-group" style="margin-bottom: 0;">
-            <label class="input-label">Tradovate Master Auto-Poller</label>
+            <label class="input-label">Tradovate Master Stream (WebSocket + Auto-Sync)</label>
             <select id="tv-master-enabled" onchange="toggleTvMasterFields()">
               <option value="false">⏸️ Off (Use MT5 Master or Webhook)</option>
-              <option value="true">🟢 Poll Tradovate Master Positions ($0 Free)</option>
+              <option value="true">🟢 Real-Time WebSocket Stream ($0 Free, 0 Rate-Limit)</option>
             </select>
           </div>
           <div class="input-group" style="margin-bottom: 0;">
@@ -317,7 +317,7 @@
         </div>
 
         <div id="tv-master-box" style="display: none; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--card-border);">
-          <div class="grid-3">
+          <div class="grid-2">
             <div class="input-group">
               <label class="input-label">Master Tradovate Env</label>
               <select id="tv-master-env">
@@ -328,10 +328,6 @@
             <div class="input-group">
               <label class="input-label">Master Account ID (Auto-detected)</label>
               <input type="number" id="tv-master-acc-id" inputmode="numeric" placeholder="0 = Any open position">
-            </div>
-            <div class="input-group">
-              <label class="input-label">Poll Interval (Seconds)</label>
-              <input type="number" id="tv-master-interval" step="0.5" min="0.5" value="1.0">
             </div>
           </div>
           <div class="input-group" style="margin-bottom: 0;">

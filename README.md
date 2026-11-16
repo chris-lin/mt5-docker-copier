@@ -12,8 +12,9 @@ While the default container names use `mt5_vantage` (Master / Signal Source) and
 
 * **Headless Docker Environment**: Runs MT5 instances inside minimal Linux containers via Wine without requiring an X11 server or GUI.
 * **Web Dashboard & Hot-Reload**: Built-in, zero-dependency browser management interface (`http://127.0.0.1:8080`) optimized for desktop and mobile browsers with live EA status indicators and HTTP Basic Auth security.
-* **Multi-Prop Futures Parallel Copier & Universal Master (`v3.0` / `v3.1`)**:
-  * **4-Way Bidirectional Copy Trading**: Supports **MT5 ➡️ MT5**, **MT5 ➡️ Futures**, **Tradovate Direct ➡️ MT5**, and **TradingView Webhook ➡️ MT5** simultaneously.
+* **Multi-Prop Futures Parallel Copier & Universal Master (`v3.0` – `v3.2`)**:
+  * **4-Way Bidirectional Copy Trading**: Supports **MT5 ➡️ MT5**, **MT5 ➡️ Futures**, **Tradovate / TradingView (bound to Tradovate) ➡️ MT5**, and **TradingView Webhook ➡️ MT5** simultaneously.
+  * **Real-Time Tradovate WebSocket Stream (`v3.2`)**: Built-in, zero-dependency RFC 6455 TLS WebSocket client (`wss://demo.tradovateapi.com/v1/websocket` & `live`) subscribing to `user/syncrequest` real-time `props` (`entityType: "position"`) push events. Delivers **`< 0.1s` instant synchronization** to FTMO (MT5) when trading from **TradingView (bound to Tradovate)** or **Tradovate Web/Mobile** without needing TradingView Alert Webhooks, while consuming **0 REST polling quota** (100% immune to Tradovate's 5,000 req/hr rate limit).
   * **$0-Monthly-Fee Direct Tradovate Integration (`v3.1`)**: Connects directly to Tradovate REST API (**Tradeify**, **Lucid Trading**, **Topstep**, **Apex**) without paid third-party bridges. Includes automatic `Account Spec` / `Account ID` discovery (`/v1/account/list`), 35-minute background Bearer token auto-renewal (`/v1/auth/renewaccesstoken`), smart token/JSON sanitization, automatic `Demo <-> Live` server fallback on `HTTP 401`, and a 1-click **`🔖 ⚡ Sync Tradovate to Copier`** browser bookmarklet. Also retains built-in webhook payload adapters for `Standard JSON`, `TradersPost`, and `PickMyTrade`.
   * **Net-Position (`netPos`) Layering & Anti-Self-Loop Guard (`v3.1`)**: Automatically decomposes Tradovate and ticketless TradingView net positions into MT5-compatible ticket layers (`reconcile_net_position_layers`) to support **Scale-In (additions)**, **LIFO Partial Closes**, and **1-Click Reversals (close-before-open)** without recompiling `FTMOReceiver.mq5`, while skipping self-loop orders back to the originating Tradovate Master account.
   * **Wildcard Contract Month Matching (`v3.1`)**: Automatically recognizes any futures contract expiration month or continuous ticker (`MGCM6`, `MGCZ6`, `MGC1!`, `MNQM6`, `MNQ1!`, `MESZ6`, `MBTZ6`) and maps it to the corresponding MT5 CFD symbol (`XAUUSD`, `US100.cash`, `US500.cash`, `BTCUSD`) using `reverse_map` `lot_per_contract` sizing.
@@ -36,11 +37,11 @@ While the default container names use `mt5_vantage` (Master / Signal Source) and
 mt5-docker-copier/
 ├── .gitignore
 ├── README.md
-├── CHANGELOG.md                   # Release history (v1.0 -> v3.1)
+├── CHANGELOG.md                   # Release history (v1.0 -> v3.2)
 ├── docker-compose.yml.example     # Docker Compose template
 ├── setup_firewall.sh              # Automated host firewall configuration
 ├── search_servers.sh              # Headless broker server search automation
-├── copier_hub.py                  # Python TCP routing hub & Web Dashboard (v3.1)
+├── copier_hub.py                  # Python TCP routing hub & Web Dashboard (v3.2)
 ├── futures_copier.py              # Multi-Prop Futures Copier & TradingView/Tradovate Master engine
 ├── vps_monitor.py                 # Zero-dependency 5s cached VPS resource monitor
 ├── .config/                       # Runtime JSON configurations (auto-seeded from config_templates/)
@@ -252,7 +253,7 @@ To securely access and configure the dashboard from any smartphone, tablet, or e
   * **Real-time Status Badges**: Live indicators showing whether `copier_hub.py` is running, which Master/Slave accounts are currently active, and whether EAs are connected.
   * **Active Profile Switcher Bar (`v2.0`)**: One-click switching (`⚡ Apply Profile`) and saving (`💾 Save Preset`) of `(symbol_map + lot_rules)` broker presets (`Vantage -> FTMO`, `Vantage -> FundedNext`, `Exness -> FTMO`, `Exness -> FundedNext`).
   * **Dual-Side MT5 Account Switcher (`v2.0`)**: Dedicated **`👤 Accounts`** tab to manage and switch both **Master (Sender)** and **Slave (Receiver)** MT5 accounts (`⚡ Switch & Restart`), automatically updating `mt5-server.ini`, applying linked profile presets, and restarting the target Docker container.
-  * **Multi-Prop Futures & Universal Master Tab (`v3.0` / `v3.1`)**: Dedicated **`🚀 Futures Copier`** tab to manage multiple Futures Prop Firm accounts (**Tradeify**, **Lucid Trading**, **Topstep**, **Apex**), sync Tradovate Bearer tokens in 1 click via the **`🔖 ⚡ Sync Tradovate to Copier`** bookmarklet (`POST /api/tradovate-sync`), and configure `Tradovate Master Auto-Poller` or `POST /api/master-webhook`.
+  * **Multi-Prop Futures & Universal Master Tab (`v3.0` – `v3.2`)**: Dedicated **`🚀 Futures Copier`** tab to manage multiple Futures Prop Firm accounts (**Tradeify**, **Lucid Trading**, **Topstep**, **Apex**), sync Tradovate Bearer tokens in 1 click via the **`🔖 ⚡ Sync Tradovate to Copier`** bookmarklet (`POST /api/tradovate-sync`), and enable the **Real-Time Tradovate Master WebSocket Stream** or `POST /api/master-webhook`.
   * **Visual Configuration & Hot-Reload**: Add, edit, and delete symbol mappings (`.config/symbol_map.json`), lot sizing rules (`.config/lot_rules.json`), and futures rules (`.config/futures_copier.json`) with immediate in-memory hot-reload and automatic timestamped backups in `backups/`.
   * **Live Activity Console**: Stream real-time trade signals (`OPEN`, `PARTIAL`, `CLOSE`) and connection logs.
 

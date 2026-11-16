@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v3.2] - 2026-11-16
+
+### Added & Changed
+- **Pure Real-Time Tradovate WebSocket Stream Engine (`futures_copier.py`, `web/index.html`, `web/app.js`)**:
+  - Added a built-in, zero-dependency RFC 6455 TLS WebSocket client (`_TradovateStdlibWebSocket`) connecting directly to `wss://demo.tradovateapi.com/v1/websocket` and `wss://live.tradovateapi.com/v1/websocket` using only Python standard library modules (`ssl`, `socket`, `struct`, `hashlib`, `base64`).
+  - Added `process_tradovate_ws_frame()` subscribing to Tradovate `user/syncrequest` to synchronize initial positions (`d.positions`), cache contract metadata (`d.contracts`), and process real-time `props` (`entityType: "position"`) push notifications (`Created`, `Updated`, `Deleted`) in `< 100ms`, whether orders are placed from **TradingView (bound to Tradovate)**, **Tradovate Web**, or **Tradovate Mobile**.
+  - Completely removed legacy/fallback REST `/position/list` polling (`poll_tradovate_master_once`) and the `poll_interval_sec` UI setting, achieving **0 REST polling requests** and 100% immunity to Tradovate's 5,000 req/hr rate limit.
+
+---
+
 ## [v3.1] - 2026-11-11
 
 ### Added

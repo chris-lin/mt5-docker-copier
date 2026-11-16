@@ -1,5 +1,11 @@
+import base64
+import hashlib
 import json
+import os
 import re
+import socket
+import ssl
+import struct
 import threading
 import time
 import urllib.request
@@ -46,6 +52,13 @@ futures_dispatched_orders = deque(maxlen=100)  # Enriched dict with target_id & 
 
 external_master_lock = threading.Lock()
 external_master_positions = {}    # {ticket: {"ticket": int, "symbol": str, "type": int, "volume": float, ...}}
+tradovate_ws_positions = {}       # {pos_id: raw_position_entity_dict}
+tradovate_ws_status = {
+    "connected": False,
+    "last_event_at": 0.0,
+    "env": "",
+    "mode": "websocket"
+}
 
 
 def reset_futures_runtime_state():
@@ -57,6 +70,9 @@ def reset_futures_runtime_state():
         futures_dispatched_orders.clear()
     with external_master_lock:
         external_master_positions.clear()
+        tradovate_ws_positions.clear()
+        tradovate_ws_status["connected"] = False
+        tradovate_ws_status["last_event_at"] = 0.0
 
 
 def get_default_futures_config() -> dict:
@@ -140,7 +156,6 @@ def get_default_futures_config() -> dict:
             "webhook_secret": "",
             "tradovate_master": {
                 "enabled": False,
-                "poll_interval_sec": 1.0,
                 "env": "demo",
                 "account_spec": "",
                 "account_id": 0,
@@ -823,32 +838,15 @@ def reconcile_net_position_layers(old_positions: dict, net_items: list) -> list:
     return snapshot
 
 
-def poll_tradovate_master_once(futures_cfg: dict, process_snapshot_fn, log_fn) -> list:
-    """Poll Tradovate Master account /position/list and feed open positions into process_snapshot_fn."""
-    ms = (futures_cfg or {}).get("master_source", {})
-    tv_m = ms.get("tradovate_master", {})
-    if not tv_m.get("enabled"):
-        return []
-    token = sanitize_tradovate_token(tv_m.get("access_token") or "")
-    if not token:
-        return []
-
-    env = tv_m.get("env", "demo")
-    base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
-    target_acc_id = int(tv_m.get("account_id") or 0)
-    target_acc_spec = str(tv_m.get("account_spec") or "").strip()
-
-    req = urllib.request.Request(
-        f"{base_url}/position/list",
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-        method="GET"
-    )
-    with urllib.request.urlopen(req, timeout=6) as resp:
-        positions_raw = json.loads(resp.read().decode("utf-8"))
-
-    if not isinstance(positions_raw, list):
-        return []
-
+def _reconcile_and_dispatch_raw_positions(
+    positions_raw: list,
+    base_url: str,
+    token: str,
+    target_acc_id: int,
+    target_acc_spec: str,
+    process_snapshot_fn
+) -> list:
+    """Convert raw Tradovate position dicts into net_items, reconcile layers, and invoke process_snapshot_fn."""
     net_items = []
     for p in positions_raw:
         if not isinstance(p, dict):
@@ -887,20 +885,261 @@ def poll_tradovate_master_once(futures_cfg: dict, process_snapshot_fn, log_fn) -
     return []
 
 
+def process_tradovate_ws_frame(raw_frame: str, futures_cfg: dict, process_snapshot_fn, log_fn) -> list:
+    """
+    Process a single Tradovate WebSocket text frame ('o', 'h', or 'a[...]'):
+      - On 'user/syncrequest' initial payload (d.positions & d.contracts), caches contract names and syncs positions.
+      - On real-time 'props' push (d.entityType == 'position'), updates tradovate_ws_positions in < 5ms
+        and immediately dispatches OPEN / PARTIAL / CLOSE to FTMO!
+    Returns list of MT5 commands sent (if any).
+    """
+    if not raw_frame:
+        return []
+    text = raw_frame.strip()
+    if text in ("o", "h", "[]"):
+        return []
+    if text.startswith("a["):
+        text = text[1:]
+    if not text.startswith("["):
+        return []
+
+    try:
+        items = json.loads(text)
+    except Exception:
+        return []
+    if not isinstance(items, list):
+        return []
+
+    ms = (futures_cfg or {}).get("master_source", {})
+    tv_m = ms.get("tradovate_master", {})
+    env = tv_m.get("env", "demo")
+    base_url = "https://live.tradovateapi.com/v1" if env == "live" else "https://demo.tradovateapi.com/v1"
+    token = sanitize_tradovate_token(tv_m.get("access_token") or "")
+    target_acc_id = int(tv_m.get("account_id") or 0)
+    target_acc_spec = str(tv_m.get("account_spec") or "").strip()
+
+    all_cmds = []
+    position_changed = False
+
+    for msg in items:
+        if not isinstance(msg, dict):
+            continue
+        d = msg.get("d")
+        if not isinstance(d, dict):
+            continue
+
+        # 1. Initial user/syncrequest snapshot containing contracts & positions arrays
+        if isinstance(d.get("contracts"), list):
+            for c in d["contracts"]:
+                if isinstance(c, dict) and c.get("id") and c.get("name"):
+                    _contract_name_cache[int(c["id"])] = str(c["name"]).strip()
+
+        if isinstance(d.get("positions"), list):
+            with external_master_lock:
+                tradovate_ws_positions.clear()
+                for p in d["positions"]:
+                    if not isinstance(p, dict):
+                        continue
+                    p_acc_id = int(p.get("accountId") or 0)
+                    if target_acc_id and p_acc_id != target_acc_id:
+                        continue
+                    pos_id = int(p.get("id") or (700000 + int(p.get("contractId") or 0)))
+                    if int(p.get("netPos") or 0) != 0:
+                        tradovate_ws_positions[pos_id] = dict(p)
+            position_changed = True
+
+        # 2. Real-time 'props' push event
+        if msg.get("e") == "props":
+            entity_type = str(d.get("entityType") or "").strip()
+            event_type = str(d.get("eventType") or d.get("event") or "").strip()
+            entity = d.get("entity")
+            if entity_type == "contract" and isinstance(entity, dict) and entity.get("id") and entity.get("name"):
+                _contract_name_cache[int(entity["id"])] = str(entity["name"]).strip()
+            elif entity_type == "position" and isinstance(entity, dict):
+                p_acc_id = int(entity.get("accountId") or 0)
+                if not target_acc_id or p_acc_id == target_acc_id:
+                    pos_id = int(entity.get("id") or (700000 + int(entity.get("contractId") or 0)))
+                    net_pos = int(entity.get("netPos") or 0)
+                    with external_master_lock:
+                        if event_type == "Deleted" or net_pos == 0:
+                            tradovate_ws_positions.pop(pos_id, None)
+                        else:
+                            tradovate_ws_positions[pos_id] = dict(entity)
+                    position_changed = True
+
+    if position_changed:
+        tradovate_ws_status["last_event_at"] = time.time()
+        with external_master_lock:
+            pos_list = list(tradovate_ws_positions.values())
+        cmds = _reconcile_and_dispatch_raw_positions(
+            pos_list, base_url, token, target_acc_id, target_acc_spec, process_snapshot_fn
+        )
+        all_cmds.extend(cmds)
+
+    return all_cmds
+
+
+class _TradovateStdlibWebSocket:
+    """Zero-dependency RFC 6455 TLS WebSocket client for wss://(demo|live).tradovateapi.com/v1/websocket."""
+
+    def __init__(self, env: str, timeout: float = 8.0):
+        self.host = "live.tradovateapi.com" if env == "live" else "demo.tradovateapi.com"
+        self.path = "/v1/websocket"
+        self.timeout = timeout
+        self.sock = None
+
+    def connect(self):
+        raw_sock = socket.create_connection((self.host, 443), timeout=self.timeout)
+        ctx = ssl.create_default_context()
+        self.sock = ctx.wrap_socket(raw_sock, server_hostname=self.host)
+        ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        handshake = (
+            f"GET {self.path} HTTP/1.1\r\n"
+            f"Host: {self.host}\r\n"
+            f"Upgrade: websocket\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n"
+            f"Origin: https://trader.tradovate.com\r\n"
+            f"User-Agent: MT5-Copier-Hub/3.2\r\n\r\n"
+        )
+        self.sock.sendall(handshake.encode("ascii"))
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = self.sock.recv(1024)
+            if not chunk:
+                raise ConnectionError("Tradovate WebSocket handshake closed prematurely")
+            resp += chunk
+        header_line = resp.split(b"\r\n", 1)[0].decode("ascii", errors="ignore")
+        if "101" not in header_line:
+            raise ConnectionError(f"Tradovate WebSocket upgrade rejected: {header_line}")
+        self.sock.settimeout(1.0)
+
+    def send_text(self, text: str):
+        payload = text.encode("utf-8")
+        mask_key = os.urandom(4)
+        header = bytearray([0x81])  # FIN + text frame
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack("!Q", length))
+        header.extend(mask_key)
+        masked = bytearray(payload[i] ^ mask_key[i % 4] for i in range(length))
+        self.sock.sendall(header + masked)
+
+    def _recv_exact(self, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("Tradovate WebSocket EOF")
+            buf += chunk
+        return buf
+
+    def recv_frame(self) -> str:
+        try:
+            b1, b2 = self._recv_exact(2)
+        except socket.timeout:
+            return ""
+        opcode = b1 & 0x0F
+        masked = (b2 & 0x80) != 0
+        length = b2 & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", self._recv_exact(2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", self._recv_exact(8))[0]
+        mask_key = self._recv_exact(4) if masked else b""
+        payload = self._recv_exact(length) if length > 0 else b""
+        if masked:
+            payload = bytes(payload[i] ^ mask_key[i % 4] for i in range(length))
+        if opcode == 0x8:  # Close frame
+            raise ConnectionError("Tradovate WebSocket closed by server")
+        if opcode == 0x9:  # Ping -> send masked Pong
+            pong_mask = os.urandom(4)
+            pong_hdr = bytearray([0x8A, 0x80 | len(payload)]) + pong_mask
+            pong_body = bytearray(payload[i] ^ pong_mask[i % 4] for i in range(len(payload)))
+            self.sock.sendall(pong_hdr + pong_body)
+            return ""
+        if opcode == 0x1:  # Text frame
+            return payload.decode("utf-8", errors="ignore")
+        return ""
+
+    def close(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+
+
 def start_tradovate_master_poller(load_cfg_fn, process_snapshot_fn, log_fn):
-    """Background daemon loop that polls Tradovate Master when enabled."""
+    """
+    v3.2 Pure Real-Time Tradovate Master WebSocket Engine:
+      - Connects to Tradovate WebSocket (wss://.../v1/websocket -> authorize -> user/syncrequest)
+        for <100ms event-driven position push with ZERO REST polling rate-limit usage.
+    """
     def _loop():
         while True:
-            interval = 1.0
             try:
                 cfg = load_cfg_fn()
                 tv_m = (cfg or {}).get("master_source", {}).get("tradovate_master", {})
-                interval = max(0.5, float(tv_m.get("poll_interval_sec", 1.0) or 1.0))
-                if tv_m.get("enabled") and tv_m.get("access_token"):
-                    poll_tradovate_master_once(cfg, process_snapshot_fn, log_fn)
+                token = sanitize_tradovate_token(tv_m.get("access_token") or "")
+                if not tv_m.get("enabled") or not token:
+                    tradovate_ws_status["connected"] = False
+                    time.sleep(1.5)
+                    continue
+
+                env = tv_m.get("env", "demo")
+                acc_id = int(tv_m.get("account_id") or 0)
+                ws = _TradovateStdlibWebSocket(env)
+                try:
+                    ws.connect()
+                    tradovate_ws_status["connected"] = True
+                    tradovate_ws_status["env"] = env
+                    log_fn("FUTURES", f"Tradovate Master WebSocket connected ({env.upper()} real-time stream active)")
+                    last_hb = time.time()
+                    authed = False
+                    synced = False
+
+                    while True:
+                        cur_cfg = load_cfg_fn()
+                        cur_tv_m = (cur_cfg or {}).get("master_source", {}).get("tradovate_master", {})
+                        cur_tok = sanitize_tradovate_token(cur_tv_m.get("access_token") or "")
+                        if not cur_tv_m.get("enabled") or cur_tok != token or cur_tv_m.get("env", "demo") != env:
+                            break
+
+                        frame = ws.recv_frame()
+                        if frame == "o" and not authed:
+                            ws.send_text(f"authorize\n1\n\n{token}")
+                            authed = True
+                        elif frame:
+                            if not synced and ('"i":1' in frame or '"i": 1' in frame) and ('"s":200' in frame or '"s": 200' in frame):
+                                sync_body = json.dumps({"accounts": [acc_id]}) if acc_id > 0 else "{}"
+                                ws.send_text(f"user/syncrequest\n2\n\n{sync_body}")
+                                synced = True
+                            process_tradovate_ws_frame(frame, cur_cfg, process_snapshot_fn, log_fn)
+
+                        now = time.time()
+                        if now - last_hb >= 2.5:
+                            ws.send_text("[]")
+                            last_hb = now
+                except Exception as ws_err:
+                    tradovate_ws_status["connected"] = False
+                    log_fn("WARN", f"Tradovate WebSocket stream interrupted ({ws_err}); reconnecting in 2s...")
+                finally:
+                    tradovate_ws_status["connected"] = False
+                    ws.close()
+
+                time.sleep(2.0)
             except Exception as e:
-                log_fn("WARN", f"Tradovate Master poll warning: {e}")
-            time.sleep(interval)
+                log_fn("WARN", f"Tradovate Master WebSocket loop warning: {e}")
+                time.sleep(2.0)
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()

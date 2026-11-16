@@ -853,7 +853,6 @@ let symbolsData = {};
       document.getElementById('master-webhook-secret').value = ms.webhook_secret || '';
       document.getElementById('tv-master-env').value = tvM.env || 'demo';
       document.getElementById('tv-master-acc-id').value = tvM.account_id || '';
-      document.getElementById('tv-master-interval').value = tvM.poll_interval_sec ?? 1.0;
       document.getElementById('tv-master-token').value = tvM.access_token || '';
       toggleTvMasterFields();
     }
@@ -1215,7 +1214,6 @@ let symbolsData = {};
           enabled: document.getElementById('tv-master-enabled') ? (document.getElementById('tv-master-enabled').value === 'true') : false,
           env: document.getElementById('tv-master-env') ? document.getElementById('tv-master-env').value : 'demo',
           account_id: document.getElementById('tv-master-acc-id') ? (parseInt(document.getElementById('tv-master-acc-id').value, 10) || 0) : 0,
-          poll_interval_sec: document.getElementById('tv-master-interval') ? (parseFloat(document.getElementById('tv-master-interval').value) || 1.0) : 1.0,
           access_token: document.getElementById('tv-master-token') ? (document.getElementById('tv-master-token').value || '••••••••') : '••••••••'
         },
         reverse_map: curMs.reverse_map || {}
